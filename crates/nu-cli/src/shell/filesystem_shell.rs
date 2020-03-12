@@ -18,6 +18,9 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use trash as SendToTrash;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 pub struct FilesystemShell {
     pub(crate) path: String,
     pub(crate) last_path: String,
@@ -172,8 +175,8 @@ impl Shell for FilesystemShell {
                 Some(o) => o,
                 _ => {
                     return Err(ShellError::labeled_error(
-                        "Can not change to home directory",
-                        "can not go to home",
+                        "Cannot change to home directory",
+                        "cannot go to home",
                         &args.call_info.name_tag,
                     ))
                 }
@@ -185,25 +188,47 @@ impl Shell for FilesystemShell {
                     PathBuf::from(&self.last_path)
                 } else {
                     let path = PathBuf::from(self.path());
+                    let path = dunce::canonicalize(path.join(&target)).map_err(|_| {
+                        ShellError::labeled_error(
+                            "Cannot change to directory",
+                            "directory not found",
+                            &v.tag,
+                        )
+                    })?;
 
-                    if target.exists() && !target.is_dir() {
+                    if !path.is_dir() {
                         return Err(ShellError::labeled_error(
-                            "Can not change to directory",
+                            "Cannot change to directory",
                             "is not a directory",
                             &v.tag,
                         ));
                     }
 
-                    match dunce::canonicalize(path.join(&target)) {
-                        Ok(p) => p,
-                        Err(_) => {
+                    #[cfg(unix)]
+                    {
+                        let has_exec = path
+                            .metadata()
+                            .map(|m| {
+                                umask::Mode::from(m.permissions().mode()).has(umask::USER_READ)
+                            })
+                            .map_err(|e| {
+                                ShellError::labeled_error(
+                                    "Cannot change to directory",
+                                    format!("cannot stat ({})", e),
+                                    &v.tag,
+                                )
+                            })?;
+
+                        if !has_exec {
                             return Err(ShellError::labeled_error(
                                 "Cannot change to directory",
-                                "directory not found",
+                                "permission denied",
                                 &v.tag,
-                            ))
+                            ));
                         }
                     }
+
+                    path
                 }
             }
         };
@@ -952,7 +977,7 @@ impl Shell for FilesystemShell {
                                     };
 
                                     let valid_target =
-                                        f.is_file() || (f.is_dir() && (is_empty || recursive.item));
+                                        f.exists() && (!f.is_dir() || (is_empty || recursive.item));
                                     if valid_target {
                                         if trash.item {
                                             match SendToTrash::remove(f) {

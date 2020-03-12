@@ -92,6 +92,7 @@ pub fn autoview(context: RunnableContext) -> Result<OutputStream, ShellError> {
                             }
                         };
                         let stream = stream.to_input_stream();
+
                         if let Some(table) = table {
                             let command_args = create_default_command_args(&context).with_input(stream);
                             let result = table.run(command_args, &context.commands);
@@ -111,14 +112,14 @@ pub fn autoview(context: RunnableContext) -> Result<OutputStream, ShellError> {
                                     let result = text.run(command_args, &context.commands);
                                     result.collect::<Vec<_>>().await;
                                 } else {
-                                    outln!("{}", s);
+                                    out!("{}", s);
                                 }
                             }
                             Value {
                                 value: UntaggedValue::Primitive(Primitive::String(s)),
                                 ..
                             } => {
-                                outln!("{}", s);
+                                out!("{}", s);
                             }
                             Value {
                                 value: UntaggedValue::Primitive(Primitive::Line(ref s)),
@@ -131,32 +132,32 @@ pub fn autoview(context: RunnableContext) -> Result<OutputStream, ShellError> {
                                     let result = text.run(command_args, &context.commands);
                                     result.collect::<Vec<_>>().await;
                                 } else {
-                                    outln!("{}\n", s);
+                                    out!("{}\n", s);
                                 }
                             }
                             Value {
                                 value: UntaggedValue::Primitive(Primitive::Line(s)),
                                 ..
                             } => {
-                                outln!("{}\n", s);
+                                out!("{}\n", s);
                             }
                             Value {
                                 value: UntaggedValue::Primitive(Primitive::Path(s)),
                                 ..
                             } => {
-                                outln!("{}", s.display());
+                                out!("{}", s.display());
                             }
                             Value {
                                 value: UntaggedValue::Primitive(Primitive::Int(n)),
                                 ..
                             } => {
-                                outln!("{}", n);
+                                out!("{}", n);
                             }
                             Value {
                                 value: UntaggedValue::Primitive(Primitive::Decimal(n)),
                                 ..
                             } => {
-                                outln!("{}", n);
+                                out!("{}", n);
                             }
 
                             Value { value: UntaggedValue::Primitive(Primitive::Binary(ref b)), .. } => {
@@ -168,7 +169,7 @@ pub fn autoview(context: RunnableContext) -> Result<OutputStream, ShellError> {
                                     result.collect::<Vec<_>>().await;
                                 } else {
                                     use pretty_hex::*;
-                                    outln!("{:?}", b.hex_dump());
+                                    out!("{:?}", b.hex_dump());
                                 }
                             }
 
@@ -183,7 +184,7 @@ pub fn autoview(context: RunnableContext) -> Result<OutputStream, ShellError> {
                                     let result = table.run(command_args, &context.commands);
                                     result.collect::<Vec<_>>().await;
                                 } else {
-                                    outln!("{:?}", item);
+                                    out!("{:?}", item);
                                 }
                             }
                         }
@@ -191,7 +192,7 @@ pub fn autoview(context: RunnableContext) -> Result<OutputStream, ShellError> {
                 }
             }
             _ => {
-                //outln!("<no results>");
+                //out!("<no results>");
             }
         }
 
