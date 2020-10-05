@@ -1,4 +1,4 @@
-# to-csv
+# to csv
 
 Converts table data into csv text.
 
@@ -13,7 +13,10 @@ Converts table data into csv text.
  1 │   │ filesystem │ /home/shaurya/Pictures
  2 │   │ filesystem │ /home/shaurya/Desktop
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | to-csv
+```
+
+```shell
+> shells | to csv
  ,name,path
 X,filesystem,/home/shaurya
  ,filesystem,/home/shaurya/Pictures
@@ -66,7 +69,10 @@ X,filesystem,/home/shaurya
    │              │              │             │ OMYACARB 1T  │          │            │            │            │           │           │
    │              │              │             │ CG BPA 25 NO │          │            │            │            │           │           │
 ━━━┷━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━┷━━━━━━━━━━━━━┷━━━━━━━━━━━━━━┷━━━━━━━━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━┷━━━━━━━━━━━━━━
-> open caco3_plastics.csv | to-csv
+```
+
+```shell
+> open caco3_plastics.csv | to csv
 importer,shipper,tariff_item,name,origin,shipped_at,arrived_at,net_weight,fob_price,cif_price,cif_per_net_weight
 PLASTICOS RIVAL CIA LTDA,S A REVERTE,2509000000,CARBONATO DE CALCIO TIPO CALCIPORE 160 T AL,SPAIN,18/03/2016,17/04/2016,"81,000.00","14,417.58","18,252.34",0.23
 MEXICHEM ECUADOR S.A.,OMYA ANDINA S A,2836500000,CARBONATO,COLOMBIA,07/07/2016,10/07/2016,"26,000.00","7,072.00","8,127.18",0.31
@@ -79,7 +85,7 @@ QUIMICOS ANDINOS QUIMANDI S.A.,SIBELCO COLOMBIA SAS,3824909999,CARBONATO DE CALC
 TIGRE ECUADOR S.A. ECUATIGRE,OMYA ANDINA S.A NIT 830.027.386-6,3824909999,CARBONATO DE  CALCIO RECUBIERTO CON ACIDO ESTEARICO OMYACARB 1T CG BPA 25 NO,COLOMBIA,01/01/1900,28/10/2016,"66,000.00","11,748.00","18,216.00",0.28
 ```
 
-To use a character other than ',' to separate records, use `--separator` :
+To use a character other than ',' to separate records, use `--separator`:
 
 ```shell
 > shells
@@ -90,25 +96,28 @@ To use a character other than ',' to separate records, use `--separator` :
  1 │   │ filesystem │ /home/shaurya/Pictures
  2 │   │ filesystem │ /home/shaurya/Desktop
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | to-csv --separator ';'
+```
+
+```shell
+> shells | to csv --separator ';'
  ;name,path
 X;filesystem;/home/shaurya
  ;filesystem;/home/shaurya/Pictures
  ;filesystem;/home/shaurya/Desktop
 ```
 
-The string '\t' can be used to separate on tabs. Note that this is the same as using the to-tsv command.
+The string '\t' can be used to separate on tabs. Note that this is the same as using the to tsv command.
 
 Newlines '\n' are not acceptable separators.
 
 Note that separators are currently provided as strings and need to be wrapped in quotes.
 
-It is also considered an error to use a separator greater than one char :
+It is also considered an error to use a separator greater than one char:
 
 ```shell
-> open pets.txt | from-csv --separator '123'
+> open pets.txt | from csv --separator '123'
 error: Expected a single separator char from --separator
 - shell:1:37
-1 | open pets.txt | from-csv --separator '123'
+1 | open pets.txt | from csv --separator '123'
   |                                      ^^^^^ requires a single character string input
 ```

@@ -1,8 +1,8 @@
-use crate::commands::command::RunnablePerItemContext;
-use crate::context::CommandRegistry;
+use crate::command_registry::CommandRegistry;
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape};
 use nu_source::Tagged;
 use std::path::PathBuf;
 
@@ -10,45 +10,102 @@ pub struct Remove;
 
 #[derive(Deserialize)]
 pub struct RemoveArgs {
-    pub target: Tagged<PathBuf>,
+    pub rest: Vec<Tagged<PathBuf>>,
     pub recursive: Tagged<bool>,
+    #[allow(unused)]
     pub trash: Tagged<bool>,
+    #[allow(unused)]
+    pub permanent: Tagged<bool>,
+    pub force: Tagged<bool>,
 }
 
-impl PerItemCommand for Remove {
+#[async_trait]
+impl WholeStreamCommand for Remove {
     fn name(&self) -> &str {
         "rm"
     }
 
     fn signature(&self) -> Signature {
         Signature::build("rm")
-            .required("path", SyntaxShape::Pattern, "the file path to remove")
             .switch(
                 "trash",
                 "use the platform's recycle bin instead of permanently deleting",
                 Some('t'),
             )
+            .switch(
+                "permanent",
+                "don't use recycle bin, delete permanently",
+                Some('p'),
+            )
             .switch("recursive", "delete subdirectories recursively", Some('r'))
+            .switch("force", "suppress error when no file", Some('f'))
+            .rest(SyntaxShape::Pattern, "the file path(s) to remove")
     }
 
     fn usage(&self) -> &str {
-        "Remove a file"
+        "Remove file(s)"
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        call_info
-            .process(&raw_args.shell_manager, raw_args.ctrl_c.clone(), rm)?
-            .run()
+        rm(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Delete or move a file to the system trash (depending on 'rm_always_trash' config option)",
+                example: "rm file.txt",
+                result: None,
+            },
+            Example {
+                description: "Move a file to the system trash",
+                example: "rm --trash file.txt",
+                result: None,
+            },
+            Example {
+                description: "Delete a file permanently",
+                example: "rm --permanent file.txt",
+                result: None,
+            },
+            Example {
+                description: "Delete a file, and suppress errors if no file is found",
+                example: "rm --force file.txt",
+                result: None,
+            }
+        ]
     }
 }
 
-fn rm(args: RemoveArgs, context: &RunnablePerItemContext) -> Result<OutputStream, ShellError> {
-    let shell_manager = context.shell_manager.clone();
-    shell_manager.rm(args, context)
+async fn rm(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+    let shell_manager = args.shell_manager.clone();
+    let (args, _): (RemoveArgs, _) = args.process(&registry).await?;
+
+    if args.trash.item && args.permanent.item {
+        return Ok(OutputStream::one(Err(ShellError::labeled_error(
+            "only one of --permanent and --trash can be used",
+            "conflicting flags",
+            name,
+        ))));
+    }
+
+    shell_manager.rm(args, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Remove;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Remove {})?)
+    }
 }

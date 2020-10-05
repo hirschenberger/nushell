@@ -12,13 +12,14 @@ pub struct FromCSVArgs {
     separator: Option<Value>,
 }
 
+#[async_trait]
 impl WholeStreamCommand for FromCSV {
     fn name(&self) -> &str {
-        "from-csv"
+        "from csv"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("from-csv")
+        Signature::build("from csv")
             .named(
                 "separator",
                 SyntaxShape::String,
@@ -36,22 +37,49 @@ impl WholeStreamCommand for FromCSV {
         "Parse text as .csv and create table."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, from_csv)?.run()
+        from_csv(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Convert comma-separated data to a table",
+                example: "open data.txt | from csv",
+                result: None,
+            },
+            Example {
+                description: "Convert comma-separated data to a table, ignoring headers",
+                example: "open data.txt | from csv --headerless",
+                result: None,
+            },
+            Example {
+                description: "Convert semicolon-separated data to a table",
+                example: "open data.txt | from csv --separator ';'",
+                result: None,
+            },
+        ]
     }
 }
 
-fn from_csv(
-    FromCSVArgs {
-        headerless,
-        separator,
-    }: FromCSVArgs,
-    runnable_context: RunnableContext,
+async fn from_csv(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+
+    let (
+        FromCSVArgs {
+            headerless,
+            separator,
+        },
+        input,
+    ) = args.process(&registry).await?;
     let sep = match separator {
         Some(Value {
             value: UntaggedValue::Primitive(Primitive::String(s)),
@@ -75,5 +103,18 @@ fn from_csv(
         _ => ',',
     };
 
-    from_delimited_data(headerless, sep, "CSV", runnable_context)
+    from_delimited_data(headerless, sep, "CSV", input, name).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FromCSV;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromCSV {})?)
+    }
 }

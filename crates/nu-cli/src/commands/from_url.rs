@@ -5,59 +5,71 @@ use nu_protocol::{ReturnSuccess, Signature, TaggedDictBuilder, UntaggedValue};
 
 pub struct FromURL;
 
+#[async_trait]
 impl WholeStreamCommand for FromURL {
     fn name(&self) -> &str {
-        "from-url"
+        "from url"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("from-url")
+        Signature::build("from url")
     }
 
     fn usage(&self) -> &str {
         "Parse url-encoded string as a table."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        from_url(args, registry)
+        from_url(args, registry).await
     }
 }
 
-fn from_url(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
-    let args = args.evaluate_once(registry)?;
+async fn from_url(
+    args: CommandArgs,
+    registry: &CommandRegistry,
+) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let args = args.evaluate_once(&registry).await?;
     let tag = args.name_tag();
     let input = args.input;
 
-    let stream = async_stream! {
-        let concat_string = input.collect_string(tag.clone()).await?;
+    let concat_string = input.collect_string(tag.clone()).await?;
 
-        let result = serde_urlencoded::from_str::<Vec<(String, String)>>(&concat_string.item);
+    let result = serde_urlencoded::from_str::<Vec<(String, String)>>(&concat_string.item);
 
-        match result {
-            Ok(result) => {
-                let mut row = TaggedDictBuilder::new(tag);
+    match result {
+        Ok(result) => {
+            let mut row = TaggedDictBuilder::new(tag);
 
-                for (k,v) in result {
-                    row.insert_untagged(k, UntaggedValue::string(v));
-                }
-
-                yield ReturnSuccess::value(row.into_value());
+            for (k, v) in result {
+                row.insert_untagged(k, UntaggedValue::string(v));
             }
-            _ => {
-                yield Err(ShellError::labeled_error_with_secondary(
-                    "String not compatible with url-encoding",
-                    "input not url-encoded",
-                    tag,
-                    "value originates from here",
-                    concat_string.tag,
-                ));
-            }
+
+            Ok(OutputStream::one(ReturnSuccess::value(row.into_value())))
         }
-    };
+        _ => Err(ShellError::labeled_error_with_secondary(
+            "String not compatible with url-encoding",
+            "input not url-encoded",
+            tag,
+            "value originates from here",
+            concat_string.tag,
+        )),
+    }
+}
 
-    Ok(stream.to_output_stream())
+#[cfg(test)]
+mod tests {
+    use super::FromURL;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromURL {})?)
+    }
 }

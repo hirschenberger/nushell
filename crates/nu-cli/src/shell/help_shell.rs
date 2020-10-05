@@ -1,19 +1,24 @@
+use crate::commands::cd::CdArgs;
 use crate::commands::command::EvaluatedWholeStreamCommandArgs;
 use crate::commands::cp::CopyArgs;
+use crate::commands::help::command_dict;
 use crate::commands::ls::LsArgs;
 use crate::commands::mkdir::MkdirArgs;
-use crate::commands::mv::MoveArgs;
+use crate::commands::move_::mv::Arguments as MvArgs;
 use crate::commands::rm::RemoveArgs;
-use crate::data::command_dict;
 use crate::prelude::*;
 use crate::shell::shell::Shell;
+
+use std::ffi::OsStr;
+use std::path::PathBuf;
+
+use crate::commands::classified::maybe_text_codec::StringOrBinary;
+use encoding_rs::Encoding;
 use nu_errors::ShellError;
-use nu_parser::ExpandContext;
 use nu_protocol::{
     Primitive, ReturnSuccess, ShellTypeName, TaggedDictBuilder, UntaggedValue, Value,
 };
-use std::ffi::OsStr;
-use std::path::PathBuf;
+use nu_source::Tagged;
 
 #[derive(Clone, Debug)]
 pub struct HelpShell {
@@ -121,7 +126,15 @@ impl Shell for HelpShell {
     }
 
     fn homedir(&self) -> Option<PathBuf> {
-        dirs::home_dir()
+        #[cfg(feature = "dirs")]
+        {
+            dirs::home_dir()
+        }
+
+        #[cfg(not(feature = "dirs"))]
+        {
+            None
+        }
     }
 
     fn path(&self) -> String {
@@ -140,7 +153,8 @@ impl Shell for HelpShell {
     fn ls(
         &self,
         _args: LsArgs,
-        _context: &RunnablePerItemContext,
+        _name: Tag,
+        _ctrl_c: Arc<AtomicBool>,
     ) -> Result<OutputStream, ShellError> {
         let output = self
             .commands()
@@ -150,19 +164,18 @@ impl Shell for HelpShell {
         Ok(output.into())
     }
 
-    fn cd(&self, args: EvaluatedWholeStreamCommandArgs) -> Result<OutputStream, ShellError> {
-        let path = match args.nth(0) {
+    fn cd(&self, args: CdArgs, _name: Tag) -> Result<OutputStream, ShellError> {
+        let path = match args.path {
             None => "/".to_string(),
             Some(v) => {
-                let target = v.as_path()?;
-
+                let Tagged { item: target, .. } = v;
                 let mut cwd = PathBuf::from(&self.path);
 
                 if target == PathBuf::from("..") {
                     cwd.pop();
                 } else {
                     match target.to_str() {
-                        Some(target) => match target.chars().nth(0) {
+                        Some(target) => match target.chars().next() {
                             Some(x) if x == '/' => cwd = PathBuf::from(target),
                             _ => cwd.push(target),
                         },
@@ -182,7 +195,7 @@ impl Shell for HelpShell {
         Ok(OutputStream::empty())
     }
 
-    fn mv(&self, _args: MoveArgs, _name: Tag, _path: &str) -> Result<OutputStream, ShellError> {
+    fn mv(&self, _args: MvArgs, _name: Tag, _path: &str) -> Result<OutputStream, ShellError> {
         Ok(OutputStream::empty())
     }
 
@@ -194,68 +207,25 @@ impl Shell for HelpShell {
         Ok(OutputStream::empty())
     }
 
-    fn complete(
+    fn open(
         &self,
-        line: &str,
-        pos: usize,
-        _ctx: &rustyline::Context<'_>,
-    ) -> Result<(usize, Vec<rustyline::completion::Pair>), rustyline::error::ReadlineError> {
-        let mut completions = vec![];
-
-        let mut possible_completion = vec![];
-        let commands = self.commands();
-        for cmd in commands {
-            match cmd {
-                Value { value, .. } => {
-                    for desc in value.data_descriptors() {
-                        possible_completion.push(desc);
-                    }
-                }
-            }
-        }
-
-        let line_chars: Vec<_> = line.chars().collect();
-        let mut replace_pos = pos;
-        while replace_pos > 0 {
-            if line_chars[replace_pos - 1] == ' ' {
-                break;
-            }
-            replace_pos -= 1;
-        }
-
-        for command in possible_completion.iter() {
-            let mut pos = replace_pos;
-            let mut matched = true;
-            if pos < line_chars.len() {
-                for chr in command.chars() {
-                    if line_chars[pos] != chr {
-                        matched = false;
-                        break;
-                    }
-                    pos += 1;
-                    if pos == line_chars.len() {
-                        break;
-                    }
-                }
-            }
-
-            if matched {
-                completions.push(rustyline::completion::Pair {
-                    display: command.to_string(),
-                    replacement: command.to_string(),
-                });
-            }
-        }
-        Ok((replace_pos, completions))
+        _path: &PathBuf,
+        _name: Span,
+        _with_encoding: Option<&'static Encoding>,
+    ) -> Result<BoxStream<'static, Result<StringOrBinary, ShellError>>, ShellError> {
+        Err(ShellError::unimplemented(
+            "open on help shell is not supported",
+        ))
     }
 
-    fn hint(
-        &self,
-        _line: &str,
-        _pos: usize,
-        _ctx: &rustyline::Context<'_>,
-        _context: ExpandContext,
-    ) -> Option<String> {
-        None
+    fn save(
+        &mut self,
+        _path: &PathBuf,
+        _contents: &[u8],
+        _name: Span,
+    ) -> Result<OutputStream, ShellError> {
+        Err(ShellError::unimplemented(
+            "save on help shell is not supported",
+        ))
     }
 }

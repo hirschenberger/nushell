@@ -27,7 +27,7 @@ fn removes_duplicate_rows() {
             "#
         ));
 
-        assert_eq!(actual, "3");
+        assert_eq!(actual.out, "3");
     })
 }
 
@@ -50,14 +50,14 @@ fn uniq_values() {
             cwd: dirs.test(), pipeline(
             r#"
                 open los_tres_caballeros.csv
-                | pick type
+                | select type
                 | uniq
                 | count
                 | echo $it
             "#
         ));
 
-        assert_eq!(actual, "2");
+        assert_eq!(actual.out, "2");
     })
 }
 
@@ -67,7 +67,7 @@ fn nested_json_structures() {
         sandbox.with_files(vec![FileWithContentToBeTrimmed(
             "nested_json_structures.json",
             r#"
-            [ 
+            [
                 {
                   "name": "this is duplicated",
                   "nesting": [ { "a": "a", "b": "b" },
@@ -121,7 +121,7 @@ fn nested_json_structures() {
                 | echo $it
             "#
         ));
-        assert_eq!(actual, "3");
+        assert_eq!(actual.out, "3");
     })
 }
 
@@ -131,12 +131,75 @@ fn uniq_when_keys_out_of_order() {
         cwd: "tests/fixtures/formats", pipeline(
         r#"
             echo '[{"a": "a", "b": [1,2,3]},{"b": [1,2,3], "a": "a"}]'
-            | from-json
+            | from json
             | uniq
             | count
             | echo $it
         "#
     ));
 
-    assert_eq!(actual, "1");
+    assert_eq!(actual.out, "1");
+}
+
+#[test]
+fn uniq_counting() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            echo '["A", "B", "A"]'
+            | from json
+            | wrap item
+            | uniq --count
+        "#
+    ));
+    let expected = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+        echo '[{"item": "A", "count": 2}, {"item": "B", "count": 1}]'
+        | from json
+        "#
+    ));
+    print!("{}", actual.out);
+    print!("{}", expected.out);
+    assert_eq!(actual.out, expected.out);
+}
+
+#[test]
+fn uniq_simple_vals_ints() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            echo [1 2 3 4 1 5]
+            | uniq
+        "#
+    ));
+    let expected = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+        echo [1 2 3 4 5]
+        "#
+    ));
+    print!("{}", actual.out);
+    print!("{}", expected.out);
+    assert_eq!(actual.out, expected.out);
+}
+
+#[test]
+fn uniq_simple_vals_strs() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            echo [A B C A]
+            | uniq
+        "#
+    ));
+    let expected = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+        echo [A B C]
+        "#
+    ));
+    print!("{}", actual.out);
+    print!("{}", expected.out);
+    assert_eq!(actual.out, expected.out);
 }

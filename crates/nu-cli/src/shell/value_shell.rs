@@ -1,17 +1,22 @@
+use crate::commands::cd::CdArgs;
 use crate::commands::command::EvaluatedWholeStreamCommandArgs;
 use crate::commands::cp::CopyArgs;
 use crate::commands::ls::LsArgs;
 use crate::commands::mkdir::MkdirArgs;
-use crate::commands::mv::MoveArgs;
+use crate::commands::move_::mv::Arguments as MvArgs;
 use crate::commands::rm::RemoveArgs;
 use crate::prelude::*;
 use crate::shell::shell::Shell;
 use crate::utils::ValueStructure;
-use nu_errors::ShellError;
-use nu_parser::ExpandContext;
-use nu_protocol::{ReturnSuccess, ShellTypeName, UntaggedValue, Value};
+
+use crate::commands::classified::maybe_text_codec::StringOrBinary;
+use encoding_rs::Encoding;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+use nu_errors::ShellError;
+use nu_protocol::{ReturnSuccess, ShellTypeName, UntaggedValue, Value};
+use nu_source::Tagged;
 
 #[derive(Clone)]
 pub struct ValueShell {
@@ -70,6 +75,8 @@ impl ValueShell {
         shell_entries
     }
 
+    // TODO make use of this in the new completion engine
+    #[allow(dead_code)]
     fn members(&self) -> VecDeque<Value> {
         self.members_under(Path::new("."))
     }
@@ -92,10 +99,10 @@ impl Shell for ValueShell {
     fn ls(
         &self,
         LsArgs { path, .. }: LsArgs,
-        context: &RunnablePerItemContext,
+        name_tag: Tag,
+        _ctrl_c: Arc<AtomicBool>,
     ) -> Result<OutputStream, ShellError> {
         let mut full_path = PathBuf::from(self.path());
-        let name_tag = context.name.clone();
 
         if let Some(value) = &path {
             full_path.push(value.as_ref());
@@ -128,23 +135,22 @@ impl Shell for ValueShell {
         Ok(output.into())
     }
 
-    fn cd(&self, args: EvaluatedWholeStreamCommandArgs) -> Result<OutputStream, ShellError> {
-        let destination = args.nth(0);
+    fn cd(&self, args: CdArgs, name: Tag) -> Result<OutputStream, ShellError> {
+        let destination = args.path;
 
         let path = match destination {
             None => "/".to_string(),
-            Some(v) => {
-                let target = v.as_path()?;
-
+            Some(ref v) => {
+                let Tagged { item: target, .. } = v;
                 let mut cwd = PathBuf::from(&self.path);
 
-                if target == PathBuf::from("..") {
+                if target == &PathBuf::from("..") {
                     cwd.pop();
-                } else if target == PathBuf::from("-") {
+                } else if target == &PathBuf::from("-") {
                     cwd = PathBuf::from(&self.last_path);
                 } else {
                     match target.to_str() {
-                        Some(target) => match target.chars().nth(0) {
+                        Some(target) => match target.chars().next() {
                             Some(x) if x == '/' => cwd = PathBuf::from(target),
                             _ => cwd.push(target),
                         },
@@ -170,7 +176,7 @@ impl Shell for ValueShell {
             return Err(ShellError::labeled_error(
                 "Can not change to path inside",
                 "No such path exists",
-                &args.call_info.name_tag,
+                &name,
             ));
         }
 
@@ -187,7 +193,7 @@ impl Shell for ValueShell {
         ))
     }
 
-    fn mv(&self, _args: MoveArgs, name: Tag, _path: &str) -> Result<OutputStream, ShellError> {
+    fn mv(&self, _args: MvArgs, name: Tag, _path: &str) -> Result<OutputStream, ShellError> {
         Err(ShellError::labeled_error(
             "mv not currently supported on values",
             "not currently supported",
@@ -228,68 +234,25 @@ impl Shell for ValueShell {
         self.path = path;
     }
 
-    fn complete(
+    fn open(
         &self,
-        line: &str,
-        pos: usize,
-        _ctx: &rustyline::Context<'_>,
-    ) -> Result<(usize, Vec<rustyline::completion::Pair>), rustyline::error::ReadlineError> {
-        let mut completions = vec![];
-
-        let mut possible_completion = vec![];
-        let members = self.members();
-        for member in members {
-            match member {
-                Value { value, .. } => {
-                    for desc in value.data_descriptors() {
-                        possible_completion.push(desc);
-                    }
-                }
-            }
-        }
-
-        let line_chars: Vec<_> = line.chars().collect();
-        let mut replace_pos = pos;
-        while replace_pos > 0 {
-            if line_chars[replace_pos - 1] == ' ' {
-                break;
-            }
-            replace_pos -= 1;
-        }
-
-        for command in possible_completion.iter() {
-            let mut pos = replace_pos;
-            let mut matched = true;
-            if pos < line_chars.len() {
-                for chr in command.chars() {
-                    if line_chars[pos] != chr {
-                        matched = false;
-                        break;
-                    }
-                    pos += 1;
-                    if pos == line_chars.len() {
-                        break;
-                    }
-                }
-            }
-
-            if matched {
-                completions.push(rustyline::completion::Pair {
-                    display: command.to_string(),
-                    replacement: command.to_string(),
-                });
-            }
-        }
-        Ok((replace_pos, completions))
+        _path: &PathBuf,
+        _name: Span,
+        _with_encoding: Option<&'static Encoding>,
+    ) -> Result<BoxStream<'static, Result<StringOrBinary, ShellError>>, ShellError> {
+        Err(ShellError::unimplemented(
+            "open on help shell is not supported",
+        ))
     }
 
-    fn hint(
-        &self,
-        _line: &str,
-        _pos: usize,
-        _ctx: &rustyline::Context<'_>,
-        _context: ExpandContext,
-    ) -> Option<String> {
-        None
+    fn save(
+        &mut self,
+        _path: &PathBuf,
+        _contents: &[u8],
+        _name: Span,
+    ) -> Result<OutputStream, ShellError> {
+        Err(ShellError::unimplemented(
+            "save on help shell is not supported",
+        ))
     }
 }

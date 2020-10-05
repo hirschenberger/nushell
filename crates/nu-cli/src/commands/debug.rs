@@ -10,6 +10,7 @@ pub struct DebugArgs {
     raw: bool,
 }
 
+#[async_trait]
 impl WholeStreamCommand for Debug {
     fn name(&self) -> &str {
         "debug"
@@ -23,21 +24,22 @@ impl WholeStreamCommand for Debug {
         "Print the Rust debug representation of the values"
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, debug_value)?.run()
+        debug_value(args, registry).await
     }
 }
 
-fn debug_value(
-    DebugArgs { raw }: DebugArgs,
-    RunnableContext { input, .. }: RunnableContext,
-) -> Result<impl ToOutputStream, ShellError> {
+async fn debug_value(
+    args: CommandArgs,
+    registry: &CommandRegistry,
+) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let (DebugArgs { raw }, input) = args.process(&registry).await?;
     Ok(input
-        .values
         .map(move |v| {
             if raw {
                 ReturnSuccess::value(
@@ -48,4 +50,17 @@ fn debug_value(
             }
         })
         .to_output_stream())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Debug;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Debug {})?)
+    }
 }

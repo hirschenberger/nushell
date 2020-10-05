@@ -1,9 +1,10 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
+use futures::future;
 use futures::stream::StreamExt;
 use nu_errors::ShellError;
-use nu_protocol::{Signature, SyntaxShape, UntaggedValue, Value};
+use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
 use nu_source::Tagged;
 
 pub struct Compact;
@@ -13,6 +14,7 @@ pub struct CompactArgs {
     rest: Vec<Tagged<String>>,
 }
 
+#[async_trait]
 impl WholeStreamCommand for Compact {
     fn name(&self) -> &str {
         "compact"
@@ -26,36 +28,68 @@ impl WholeStreamCommand for Compact {
         "Creates a table with non-empty rows"
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, compact)?.run()
+        compact(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Filter out all directory entries having no 'target'",
+            example: "ls -la | compact target",
+            result: None,
+        }]
     }
 }
 
-pub fn compact(
-    CompactArgs { rest: columns }: CompactArgs,
-    RunnableContext { input, .. }: RunnableContext,
+pub async fn compact(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let objects = input.values.filter(move |item| {
-        let keep = if columns.is_empty() {
-            item.is_some()
-        } else {
-            match item {
-                Value {
-                    value: UntaggedValue::Row(ref r),
-                    ..
-                } => columns
-                    .iter()
-                    .all(|field| r.get_data(field).borrow().is_some()),
-                _ => false,
-            }
-        };
+    let registry = registry.clone();
+    let (CompactArgs { rest: columns }, input) = args.process(&registry).await?;
+    Ok(input
+        .filter_map(move |item| {
+            future::ready(if columns.is_empty() {
+                if !item.is_empty() {
+                    Some(ReturnSuccess::value(item))
+                } else {
+                    None
+                }
+            } else {
+                match item {
+                    Value {
+                        value: UntaggedValue::Row(ref r),
+                        ..
+                    } => {
+                        if columns
+                            .iter()
+                            .all(|field| r.get_data(field).borrow().is_some())
+                        {
+                            Some(ReturnSuccess::value(item))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            })
+        })
+        .to_output_stream())
+}
 
-        futures::future::ready(keep)
-    });
+#[cfg(test)]
+mod tests {
+    use super::Compact;
+    use super::ShellError;
 
-    Ok(objects.from_input_stream())
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Compact {})?)
+    }
 }

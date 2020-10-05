@@ -1,7 +1,10 @@
 use crate::commands::{UnevaluatedCallInfo, WholeStreamCommand};
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{Primitive, ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
+use nu_protocol::{
+    hir::ExternalRedirection, Primitive, ReturnSuccess, Signature, SyntaxShape, UntaggedValue,
+    Value,
+};
 use nu_source::Tagged;
 use std::path::{Path, PathBuf};
 
@@ -129,6 +132,7 @@ pub struct SaveArgs {
     raw: bool,
 }
 
+#[async_trait]
 impl WholeStreamCommand for Save {
     fn name(&self) -> &str {
         "save"
@@ -148,125 +152,109 @@ impl WholeStreamCommand for Save {
         "Save the contents of the pipeline to a file."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        Ok(args.process_raw(registry, save)?.run())
+        save(args, registry).await
     }
 }
 
-fn save(
-    SaveArgs {
-        path,
-        raw: save_raw,
-    }: SaveArgs,
-    RunnableContext {
-        input,
-        name,
-        shell_manager,
-        host,
-        ctrl_c,
-        commands: registry,
-        ..
-    }: RunnableContext,
-    raw_args: RawCommandArgs,
+async fn save(
+    raw_args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let mut full_path = PathBuf::from(shell_manager.path());
-    let name_tag = name.clone();
+    let mut full_path = PathBuf::from(raw_args.shell_manager.path());
+    let name_tag = raw_args.call_info.name_tag.clone();
+    let name = raw_args.call_info.name_tag.clone();
+    let scope = raw_args.call_info.scope.clone();
+    let registry = registry.clone();
+    let host = raw_args.host.clone();
+    let ctrl_c = raw_args.ctrl_c.clone();
+    let current_errors = raw_args.current_errors.clone();
+    let mut shell_manager = raw_args.shell_manager.clone();
 
-    let stream = async_stream! {
-        let input: Vec<Value> = input.values.collect().await;
-        if path.is_none() {
-            // If there is no filename, check the metadata for the anchor filename
-            if input.len() > 0 {
-                let anchor = input[0].tag.anchor();
-                match anchor {
-                    Some(path) => match path {
-                        AnchorLocation::File(file) => {
-                            full_path.push(Path::new(&file));
-                        }
-                        _ => {
-                            yield Err(ShellError::labeled_error(
-                                "Save requires a filepath",
-                                "needs path",
-                                name_tag.clone(),
-                            ));
-                        }
-                    },
-                    None => {
-                        yield Err(ShellError::labeled_error(
-                            "Save requires a filepath",
-                            "needs path",
-                            name_tag.clone(),
-                        ));
-                    }
+    let head = raw_args.call_info.args.head.clone();
+    let (
+        SaveArgs {
+            path,
+            raw: save_raw,
+        },
+        input,
+    ) = raw_args.process(&registry).await?;
+    let input: Vec<Value> = input.collect().await;
+    if path.is_none() {
+        let mut should_return_file_path_error = true;
+
+        // If there is no filename, check the metadata for the anchor filename
+        if !input.is_empty() {
+            let anchor = input[0].tag.anchor();
+
+            if let Some(path) = anchor {
+                if let AnchorLocation::File(file) = path {
+                    should_return_file_path_error = false;
+                    full_path.push(Path::new(&file));
                 }
-            } else {
-                yield Err(ShellError::labeled_error(
-                    "Save requires a filepath",
-                    "needs path",
-                    name_tag.clone(),
-                ));
-            }
-        } else {
-            if let Some(file) = path {
-                full_path.push(file.item());
             }
         }
 
-        // TODO use label_break_value once it is stable:
-        // https://github.com/rust-lang/rust/issues/48594
-        let content : Result<Vec<u8>, ShellError> = 'scope: loop {
-            break if !save_raw {
-                if let Some(extension) = full_path.extension() {
-                    let command_name = format!("to-{}", extension.to_string_lossy());
-                    if let Some(converter) = registry.get_command(&command_name) {
-                        let new_args = RawCommandArgs {
-                            host,
-                            ctrl_c,
-                            shell_manager,
-                            call_info: UnevaluatedCallInfo {
-                                args: nu_parser::hir::Call {
-                                    head: raw_args.call_info.args.head,
-                                    positional: None,
-                                    named: None,
-                                    span: Span::unknown()
-                                },
-                                source: raw_args.call_info.source,
-                                name_tag: raw_args.call_info.name_tag,
-                            }
-                        };
-                        let mut result = converter.run(new_args.with_input(input), &registry);
-                        let result_vec: Vec<Result<ReturnSuccess, ShellError>> = result.drain_vec().await;
-                        if converter.is_binary() {
-                            process_binary_return_success!('scope, result_vec, name_tag)
-                        } else {
-                            process_string_return_success!('scope, result_vec, name_tag)
-                        }
+        if should_return_file_path_error {
+            return Err(ShellError::labeled_error(
+                "Save requires a filepath",
+                "needs path",
+                name_tag.clone(),
+            ));
+        }
+    } else if let Some(file) = path {
+        full_path.push(file.item());
+    }
+
+    // TODO use label_break_value once it is stable:
+    // https://github.com/rust-lang/rust/issues/48594
+    #[allow(clippy::never_loop)]
+    let content: Result<Vec<u8>, ShellError> = 'scope: loop {
+        break if !save_raw {
+            if let Some(extension) = full_path.extension() {
+                let command_name = format!("to {}", extension.to_string_lossy());
+                if let Some(converter) = registry.get_command(&command_name) {
+                    let new_args = RawCommandArgs {
+                        host,
+                        ctrl_c,
+                        current_errors,
+                        shell_manager: shell_manager.clone(),
+                        call_info: UnevaluatedCallInfo {
+                            args: nu_protocol::hir::Call {
+                                head,
+                                positional: None,
+                                named: None,
+                                span: Span::unknown(),
+                                external_redirection: ExternalRedirection::Stdout,
+                            },
+                            name_tag: name_tag.clone(),
+                            scope,
+                        },
+                    };
+                    let mut result = converter.run(new_args.with_input(input), &registry).await?;
+                    let result_vec: Vec<Result<ReturnSuccess, ShellError>> =
+                        result.drain_vec().await;
+                    if converter.is_binary() {
+                        process_binary_return_success!('scope, result_vec, name_tag)
                     } else {
-                        process_unknown!('scope, input, name_tag)
+                        process_string_return_success!('scope, result_vec, name_tag)
                     }
                 } else {
                     process_unknown!('scope, input, name_tag)
                 }
             } else {
-                Ok(string_from(&input).into_bytes())
-            };
+                process_unknown!('scope, input, name_tag)
+            }
+        } else {
+            Ok(string_from(&input).into_bytes())
         };
-
-        match content {
-            Ok(save_data) => match std::fs::write(full_path, save_data) {
-                Ok(o) => o,
-                Err(e) => yield Err(ShellError::labeled_error(e.to_string(), "IO error while saving", name)),
-            },
-            Err(e) => yield Err(e),
-        }
-
     };
 
-    Ok(OutputStream::new(stream))
+    shell_manager.save(&full_path, &content?, name.span)
 }
 
 fn string_from(input: &[Value]) -> String {
@@ -287,4 +275,17 @@ fn string_from(input: &[Value]) -> String {
     }
 
     save_data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Save;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Save {})?)
+    }
 }

@@ -1,23 +1,71 @@
-use nu_test_support::{nu, nu_error};
+use nu_test_support::nu;
 
-// #[test]
-// fn shows_error_for_command_that_fails() {
-//     let actual = nu_error!(
-//         cwd: ".",
-//         "fail"
-//     );
-
-//     assert!(actual.contains("External command failed"));
-// }
-
+#[cfg(feature = "which")]
 #[test]
 fn shows_error_for_command_not_found() {
-    let actual = nu_error!(
+    let actual = nu!(
         cwd: ".",
         "ferris_is_not_here.exe"
     );
 
-    assert!(actual.contains("Command not found"));
+    assert!(actual.err.contains("Command not found"));
+}
+
+#[cfg(feature = "which")]
+#[test]
+fn shows_error_for_command_not_found_in_pipeline() {
+    let actual = nu!(
+        cwd: ".",
+        "ferris_is_not_here.exe | echo done"
+    );
+
+    assert!(actual.err.contains("Command not found"));
+}
+
+#[cfg(feature = "which")]
+#[test]
+fn automatically_change_directory() {
+    use nu_test_support::playground::Playground;
+
+    Playground::setup("cd_test_5_1", |dirs, sandbox| {
+        sandbox.mkdir("autodir");
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            r#"
+                autodir
+                pwd | echo $it
+            "#
+        );
+
+        assert!(actual.out.ends_with("autodir"));
+    })
+}
+
+#[test]
+fn automatically_change_directory_with_trailing_slash_and_same_name_as_command() {
+    use nu_test_support::playground::Playground;
+
+    Playground::setup("cd_test_5_1", |dirs, sandbox| {
+        sandbox.mkdir("cd");
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            r#"
+                cd/
+                pwd | echo $it
+            "#
+        );
+
+        assert!(actual.out.ends_with("cd"));
+    })
+}
+
+#[test]
+fn correctly_escape_external_arguments() {
+    let actual = nu!(cwd: ".", r#"^echo '$0'"#);
+
+    assert_eq!(actual.out, "$0");
 }
 
 mod it_evaluation {
@@ -39,14 +87,14 @@ mod it_evaluation {
                 ls
                 | sort-by name
                 | get name
-                | cococo $it
+                | nu --testbin cococo $it
                 | lines
                 | nth 1
                 | echo $it
                 "#
             ));
 
-            assert_eq!(actual, "jonathan_likes_cake.txt");
+            assert_eq!(actual.out, "jonathan_likes_cake.txt");
         })
     }
 
@@ -66,14 +114,14 @@ mod it_evaluation {
             r#"
                 open nu_candies.txt
                 | lines
-                | chop $it
+                | nu --testbin chop $it
                 | lines
                 | nth 1
                 | echo $it
                 "#
             ));
 
-            assert_eq!(actual, "AndrásWithKitKat");
+            assert_eq!(actual.out, "AndrásWithKitKat");
         })
     }
 
@@ -91,31 +139,31 @@ mod it_evaluation {
                 cwd: dirs.test(), pipeline(
                 r#"
                     open sample.toml
-                    | cococo $it.nu_party_venue
+                    | nu --testbin cococo $it.nu_party_venue
                     | echo $it
                 "#
             ));
 
-            assert_eq!(actual, "zion");
+            assert_eq!(actual.out, "zion");
         })
     }
 }
 
 mod stdin_evaluation {
-    use super::{nu, nu_error};
+    use super::nu;
     use nu_test_support::pipeline;
 
     #[test]
     fn does_not_panic_with_no_newline_in_stream() {
-        let stderr = nu_error!(
+        let actual = nu!(
             cwd: ".",
             pipeline(r#"
-                nonu "where's the nuline?"
+                nu --testbin nonu "where's the nuline?"
                 | count
             "#
         ));
 
-        assert_eq!(stderr, "");
+        assert_eq!(actual.err, "");
     }
 
     #[test]
@@ -123,13 +171,14 @@ mod stdin_evaluation {
         let stdout = nu!(
             cwd: ".",
             pipeline(r#"
-                iecho yes
-                | chop
-                | chop
+                nu --testbin iecho yes
+                | nu --testbin chop
+                | nu --testbin chop
                 | lines
                 | first 1
             "#
-        ));
+        ))
+        .out;
 
         assert_eq!(stdout, "y");
     }
@@ -141,10 +190,19 @@ mod external_words {
     #[test]
     fn relaxed_external_words() {
         let actual = nu!(cwd: ".", r#"
-        cococo joturner@foo.bar.baz
+        nu --testbin cococo joturner@foo.bar.baz
         "#);
 
-        assert_eq!(actual, "joturner@foo.bar.baz");
+        assert_eq!(actual.out, "joturner@foo.bar.baz");
+    }
+
+    #[test]
+    fn no_escaping_for_single_quoted_strings() {
+        let actual = nu!(cwd: ".", r#"
+        nu --testbin cococo 'test "things"'
+        "#);
+
+        assert_eq!(actual.out, "test \"things\"");
     }
 }
 
@@ -157,7 +215,7 @@ mod nu_commands {
         nu -c "echo 'foo'"
         "#);
 
-        assert_eq!(actual, "foo");
+        assert_eq!(actual.out, "foo");
     }
 }
 
@@ -170,7 +228,7 @@ mod nu_script {
         nu script.nu
         "#);
 
-        assert_eq!(actual, "done");
+        assert_eq!(actual.out, "done");
     }
 
     #[test]
@@ -179,7 +237,7 @@ mod nu_script {
         nu script_multiline.nu
         "#);
 
-        assert_eq!(actual, "23");
+        assert_eq!(actual.out, "23");
     }
 }
 
@@ -191,13 +249,13 @@ mod tilde_expansion {
         let actual = nu!(
             cwd: ".",
             r#"
-            cococo ~
+            nu --testbin cococo  ~
         "#
         );
 
         assert!(
-            !actual.contains('~'),
-            format!("'{}' should not contain ~", actual)
+            !actual.out.contains('~'),
+            format!("'{}' should not contain ~", actual.out)
         );
     }
 
@@ -206,10 +264,41 @@ mod tilde_expansion {
         let actual = nu!(
             cwd: ".",
             r#"
-                    cococo "1~1"
+                nu --testbin cococo  "1~1"
                 "#
         );
 
-        assert_eq!(actual, "1~1");
+        assert_eq!(actual.out, "1~1");
+    }
+}
+
+mod external_command_arguments {
+    use super::nu;
+    use nu_test_support::fs::Stub::EmptyFile;
+    use nu_test_support::{pipeline, playground::Playground};
+    #[test]
+    fn expands_table_of_primitives_to_positional_arguments() {
+        Playground::setup(
+            "expands_table_of_primitives_to_positional_arguments",
+            |dirs, sandbox| {
+                sandbox.with_files(vec![
+                    EmptyFile("jonathan_likes_cake.txt"),
+                    EmptyFile("andres_likes_arepas.txt"),
+                    EmptyFile("ferris_not_here.txt"),
+                ]);
+
+                let actual = nu!(
+                cwd: dirs.test(), pipeline(
+                r#"
+                    nu --testbin cococo $(ls | get name)
+                "#
+                ));
+
+                assert_eq!(
+                    actual.out,
+                    "andres_likes_arepas.txt ferris_not_here.txt jonathan_likes_cake.txt"
+                );
+            },
+        )
     }
 }

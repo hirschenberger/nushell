@@ -1,8 +1,8 @@
-use crate::commands::command::RunnablePerItemContext;
-use crate::context::CommandRegistry;
+use crate::command_registry::CommandRegistry;
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape};
 use nu_source::Tagged;
 use std::path::PathBuf;
 
@@ -11,35 +11,61 @@ pub struct Mkdir;
 #[derive(Deserialize)]
 pub struct MkdirArgs {
     pub rest: Vec<Tagged<PathBuf>>,
+    #[serde(rename = "show-created-paths")]
+    pub show_created_paths: bool,
 }
 
-impl PerItemCommand for Mkdir {
+#[async_trait]
+impl WholeStreamCommand for Mkdir {
     fn name(&self) -> &str {
         "mkdir"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("mkdir").rest(SyntaxShape::Path, "the name(s) of the path(s) to create")
+        Signature::build("mkdir")
+            .rest(SyntaxShape::Path, "the name(s) of the path(s) to create")
+            .switch("show-created-paths", "show the path(s) created.", Some('s'))
     }
 
     fn usage(&self) -> &str {
         "Make directories, creates intermediary directories as required."
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        call_info
-            .process(&raw_args.shell_manager, raw_args.ctrl_c.clone(), mkdir)?
-            .run()
+        mkdir(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Make a directory named foo",
+            example: "mkdir foo",
+            result: None,
+        }]
     }
 }
 
-fn mkdir(args: MkdirArgs, context: &RunnablePerItemContext) -> Result<OutputStream, ShellError> {
-    let shell_manager = context.shell_manager.clone();
-    shell_manager.mkdir(args, context)
+async fn mkdir(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+    let shell_manager = args.shell_manager.clone();
+    let (args, _) = args.process(&registry).await?;
+
+    shell_manager.mkdir(args, name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mkdir;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Mkdir {})?)
+    }
 }

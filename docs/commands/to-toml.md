@@ -1,4 +1,4 @@
-# to-toml
+# to toml
 
 Converts table data into toml text.
 
@@ -7,13 +7,16 @@ Converts table data into toml text.
 ```shell
 > shells
 ━━━┯━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━
- # │   │ name       │ path 
+ # │   │ name       │ path
 ───┼───┼────────────┼────────────────────────
- 0 │ X │ filesystem │ /home/shaurya 
- 1 │   │ filesystem │ /home/shaurya/Pictures 
- 2 │   │ filesystem │ /home/shaurya/Desktop 
+ 0 │ X │ filesystem │ /home/shaurya
+ 1 │   │ filesystem │ /home/shaurya/Pictures
+ 2 │   │ filesystem │ /home/shaurya/Desktop
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | to-toml
+```
+
+```shell
+> shells | to toml
 [[]]
 " " = "X"
 name = "filesystem"
@@ -28,20 +31,22 @@ path = "/home/shaurya/Pictures"
 " " = " "
 name = "filesystem"
 path = "/home/shaurya/Desktop"
-
 ```
 
 ```shell
 > open cargo_sample.toml
 ━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━
- dependencies   │ dev-dependencies │ package 
+ dependencies   │ dev-dependencies │ package
 ────────────────┼──────────────────┼────────────────
- [table: 1 row] │ [table: 1 row]   │ [table: 1 row] 
+ [table: 1 row] │ [table: 1 row]   │ [table: 1 row]
 ━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━
-> open cargo_sample.toml | to-toml
+```
+
+```shell
+> open cargo_sample.toml | to toml
 [dependencies]
 ansi_term = "0.11.0"
-app_dirs = "1.2.1"
+directories = "2.0.2"
 byte-unit = "2.1.0"
 bytes = "0.4.12"
 chrono-humanize = "0.0.11"
@@ -83,7 +88,7 @@ version = "0.4.6"
 [dependencies.cursive]
 default-features = false
 features = ["pancurses-backend"]
-version = "0.12.0"
+version = "0.20.0"
 
 [dependencies.futures-preview]
 features = ["compat", "io-compat"]
@@ -101,11 +106,10 @@ version = "0.16"
 pretty_assertions = "0.6.1"
 
 [package]
-authors = ["Yehuda Katz <wycats@gmail.com>"]
+authors = ["The Nu Project Contributors"]
 description = "A shell for the GitHub era"
 edition = "2018"
 license = "ISC"
 name = "nu"
 version = "0.1.1"
-
 ```

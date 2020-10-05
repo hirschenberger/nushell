@@ -1,8 +1,8 @@
-use crate::commands::command::RunnablePerItemContext;
-use crate::context::CommandRegistry;
+use crate::command_registry::CommandRegistry;
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape};
 use nu_source::Tagged;
 use std::process::{Command, Stdio};
 
@@ -16,7 +16,8 @@ pub struct KillArgs {
     pub quiet: Tagged<bool>,
 }
 
-impl PerItemCommand for Kill {
+#[async_trait]
+impl WholeStreamCommand for Kill {
     fn name(&self) -> &str {
         "kill"
     }
@@ -37,28 +38,42 @@ impl PerItemCommand for Kill {
         "Kill a process using the process id."
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        call_info
-            .process(&raw_args.shell_manager, raw_args.ctrl_c.clone(), kill)?
-            .run()
+        kill(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Kill the pid using the most memory",
+                example: "ps | sort-by mem | last | kill $it.pid",
+                result: None,
+            },
+            Example {
+                description: "Force kill a given pid",
+                example: "kill --force 12345",
+                result: None,
+            },
+        ]
     }
 }
 
-fn kill(
-    KillArgs {
-        pid,
-        rest,
-        force,
-        quiet,
-    }: KillArgs,
-    _context: &RunnablePerItemContext,
-) -> Result<OutputStream, ShellError> {
+async fn kill(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+
+    let (
+        KillArgs {
+            pid,
+            rest,
+            force,
+            quiet,
+        },
+        ..,
+    ) = args.process(&registry).await?;
     let mut cmd = if cfg!(windows) {
         let mut cmd = Command::new("taskkill");
 
@@ -101,4 +116,17 @@ fn kill(
     cmd.status().expect("failed to execute shell command");
 
     Ok(OutputStream::empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Kill;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Kill {})?)
+    }
 }

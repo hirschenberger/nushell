@@ -1,40 +1,72 @@
 use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::{CoerceInto, ShellError};
-use nu_protocol::{Primitive, ReturnSuccess, Signature, UnspannedPathMember, UntaggedValue, Value};
+use nu_protocol::{
+    Primitive, ReturnSuccess, Signature, SyntaxShape, UnspannedPathMember, UntaggedValue, Value,
+};
+use serde::Serialize;
+use serde_json::json;
 
 pub struct ToJSON;
 
+#[derive(Deserialize)]
+pub struct ToJSONArgs {
+    pretty: Option<Value>,
+}
+
+#[async_trait]
 impl WholeStreamCommand for ToJSON {
     fn name(&self) -> &str {
-        "to-json"
+        "to json"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("to-json")
+        Signature::build("to json").named(
+            "pretty",
+            SyntaxShape::Int,
+            "Formats the JSON text with the provided indentation setting",
+            Some('p'),
+        )
     }
 
     fn usage(&self) -> &str {
-        "Convert table into .json text"
+        "Converts table data into JSON text."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        to_json(args, registry)
+        to_json(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description:
+                    "Outputs an unformatted JSON string representing the contents of this table",
+                example: "echo [1 2 3] | to json",
+                result: Some(vec![Value::from("[1,2,3]")]),
+            },
+            Example {
+                description:
+                    "Outputs a formatted JSON string representing the contents of this table with an indentation setting of 2 spaces",
+                example: "echo [1 2 3] | to json --pretty 2",
+                result: Some(vec![Value::from("[\n  1,\n  2,\n  3\n]")]),
+            },
+        ]
     }
 }
 
 pub fn value_to_json_value(v: &Value) -> Result<serde_json::Value, ShellError> {
     Ok(match &v.value {
         UntaggedValue::Primitive(Primitive::Boolean(b)) => serde_json::Value::Bool(*b),
-        UntaggedValue::Primitive(Primitive::Bytes(b)) => serde_json::Value::Number(
+        UntaggedValue::Primitive(Primitive::Filesize(b)) => serde_json::Value::Number(
             serde_json::Number::from(b.to_u64().expect("What about really big numbers")),
         ),
-        UntaggedValue::Primitive(Primitive::Duration(secs)) => {
-            serde_json::Value::Number(serde_json::Number::from(*secs))
+        UntaggedValue::Primitive(Primitive::Duration(i)) => {
+            serde_json::Value::String(i.to_string())
         }
         UntaggedValue::Primitive(Primitive::Date(d)) => serde_json::Value::String(d.to_string()),
         UntaggedValue::Primitive(Primitive::EndOfStream) => serde_json::Value::Null,
@@ -131,47 +163,114 @@ fn json_list(input: &[Value]) -> Result<Vec<serde_json::Value>, ShellError> {
     Ok(out)
 }
 
-fn to_json(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
-    let args = args.evaluate_once(registry)?;
-    let name_tag = args.name_tag();
+async fn to_json(
+    args: CommandArgs,
+    registry: &CommandRegistry,
+) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let name_tag = args.call_info.name_tag.clone();
+    let (ToJSONArgs { pretty }, input) = args.process(&registry).await?;
     let name_span = name_tag.span;
-    let stream = async_stream! {
-        let input: Vec<Value> = args.input.values.collect().await;
+    let input: Vec<Value> = input.collect().await;
 
-        let to_process_input = if input.len() > 1 {
+    let to_process_input = match input.len() {
+        x if x > 1 => {
             let tag = input[0].tag.clone();
-            vec![Value { value: UntaggedValue::Table(input), tag } ]
-        } else if input.len() == 1 {
-            input
-        } else {
-            vec![]
-        };
-
-        for value in to_process_input {
-            match value_to_json_value(&value) {
-                Ok(json_value) => {
-                    let value_span = value.tag.span;
-
-                    match serde_json::to_string(&json_value) {
-                        Ok(x) => yield ReturnSuccess::value(
-                            UntaggedValue::Primitive(Primitive::String(x)).into_value(&name_tag),
-                        ),
-                        _ => yield Err(ShellError::labeled_error_with_secondary(
-                            "Expected a table with JSON-compatible structure.tag() from pipeline",
-                            "requires JSON-compatible input",
-                            name_span,
-                            "originates from here".to_string(),
-                            value_span,
-                        )),
-                    }
-                }
-                _ => yield Err(ShellError::labeled_error(
-                    "Expected a table with JSON-compatible structure from pipeline",
-                    "requires JSON-compatible input",
-                    &name_tag))
-            }
+            vec![Value {
+                value: UntaggedValue::Table(input),
+                tag,
+            }]
         }
+        1 => input,
+        _ => vec![],
     };
 
-    Ok(stream.to_output_stream())
+    Ok(futures::stream::iter(to_process_input.into_iter().map(
+        move |value| match value_to_json_value(&value) {
+            Ok(json_value) => {
+                let value_span = value.tag.span;
+
+                match serde_json::to_string(&json_value) {
+                    Ok(mut serde_json_string) => {
+                        if let Some(pretty_value) = &pretty {
+                            let mut pretty_format_failed = true;
+
+                            if let Ok(pretty_u64) = pretty_value.as_u64() {
+                                if let Ok(serde_json_value) =
+                                    serde_json::from_str::<serde_json::Value>(
+                                        serde_json_string.as_str(),
+                                    )
+                                {
+                                    let indentation_string = std::iter::repeat(" ")
+                                        .take(pretty_u64 as usize)
+                                        .collect::<String>();
+                                    let serde_formatter =
+                                        serde_json::ser::PrettyFormatter::with_indent(
+                                            indentation_string.as_bytes(),
+                                        );
+                                    let serde_buffer = Vec::new();
+                                    let mut serde_serializer =
+                                        serde_json::Serializer::with_formatter(
+                                            serde_buffer,
+                                            serde_formatter,
+                                        );
+                                    let serde_json_object = json!(serde_json_value);
+
+                                    if let Ok(()) =
+                                        serde_json_object.serialize(&mut serde_serializer)
+                                    {
+                                        if let Ok(ser_json_string) =
+                                            String::from_utf8(serde_serializer.into_inner())
+                                        {
+                                            pretty_format_failed = false;
+                                            serde_json_string = ser_json_string
+                                        }
+                                    }
+                                }
+                            }
+
+                            if pretty_format_failed {
+                                return Err(ShellError::labeled_error(
+                                    "Pretty formatting failed",
+                                    "failed",
+                                    pretty_value.tag(),
+                                ));
+                            }
+                        }
+
+                        ReturnSuccess::value(
+                            UntaggedValue::Primitive(Primitive::String(serde_json_string))
+                                .into_value(&value.tag),
+                        )
+                    }
+                    _ => Err(ShellError::labeled_error_with_secondary(
+                        "Expected a table with JSON-compatible structure.tag() from pipeline",
+                        "requires JSON-compatible input",
+                        name_span,
+                        "originates from here".to_string(),
+                        value_span,
+                    )),
+                }
+            }
+            _ => Err(ShellError::labeled_error(
+                "Expected a table with JSON-compatible structure from pipeline",
+                "requires JSON-compatible input",
+                &name_tag,
+            )),
+        },
+    ))
+    .to_output_stream())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellError;
+    use super::ToJSON;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(ToJSON {})?)
+    }
 }

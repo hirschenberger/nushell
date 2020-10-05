@@ -1,6 +1,6 @@
 use nu_test_support::fs::{files_exist_at, Stub::EmptyFile};
+use nu_test_support::nu;
 use nu_test_support::playground::Playground;
-use nu_test_support::{nu, nu_error};
 
 #[test]
 fn removes_a_file() {
@@ -125,37 +125,154 @@ fn removes_directory_contents_with_recursive_flag() {
 fn errors_if_attempting_to_delete_a_directory_with_content_without_recursive_flag() {
     Playground::setup("rm_test_6", |dirs, sandbox| {
         sandbox.with_files(vec![EmptyFile("some_empty_file.txt")]);
-
-        let actual = nu_error!(
+        let actual = nu!(
             cwd: dirs.root(),
             "rm rm_test_6"
         );
 
         assert!(dirs.test().exists());
-        assert!(actual.contains("cannot remove non-empty directory"));
+        assert!(actual.err.contains("cannot remove non-empty directory"));
     })
 }
 
 #[test]
 fn errors_if_attempting_to_delete_single_dot_as_argument() {
     Playground::setup("rm_test_7", |dirs, _| {
-        let actual = nu_error!(
+        let actual = nu!(
             cwd: dirs.root(),
             "rm ."
         );
 
-        assert!(actual.contains("may not be removed"));
+        assert!(actual.err.contains("cannot remove any parent directory"));
     })
 }
 
 #[test]
 fn errors_if_attempting_to_delete_two_dot_as_argument() {
     Playground::setup("rm_test_8", |dirs, _| {
-        let actual = nu_error!(
+        let actual = nu!(
             cwd: dirs.root(),
             "rm .."
         );
 
-        assert!(actual.contains("may not be removed"));
+        assert!(actual.err.contains("cannot remove any parent directory"));
+    })
+}
+
+#[test]
+fn removes_multiple_directories() {
+    Playground::setup("rm_test_9", |dirs, sandbox| {
+        sandbox
+            .within("src")
+            .with_files(vec![EmptyFile("a.rs"), EmptyFile("b.rs")])
+            .within("src/cli")
+            .with_files(vec![EmptyFile("c.rs"), EmptyFile("d.rs")])
+            .within("test")
+            .with_files(vec![EmptyFile("a_test.rs"), EmptyFile("b_test.rs")]);
+
+        nu!(
+            cwd: dirs.test(),
+            "rm src test --recursive"
+        );
+
+        assert_eq!(
+            Playground::glob_vec(&format!("{}/*", dirs.test().display())),
+            Vec::<std::path::PathBuf>::new()
+        );
+    })
+}
+
+#[test]
+fn removes_multiple_files() {
+    Playground::setup("rm_test_10", |dirs, sandbox| {
+        sandbox.with_files(vec![
+            EmptyFile("yehuda.txt"),
+            EmptyFile("jonathan.txt"),
+            EmptyFile("andres.txt"),
+        ]);
+
+        nu!(
+            cwd: dirs.test(),
+            "rm yehuda.txt jonathan.txt andres.txt"
+        );
+
+        assert_eq!(
+            Playground::glob_vec(&format!("{}/*", dirs.test().display())),
+            Vec::<std::path::PathBuf>::new()
+        );
+    })
+}
+
+#[test]
+fn removes_multiple_files_with_asterisks() {
+    Playground::setup("rm_test_11", |dirs, sandbox| {
+        sandbox.with_files(vec![
+            EmptyFile("yehuda.txt"),
+            EmptyFile("jonathan.txt"),
+            EmptyFile("andres.toml"),
+        ]);
+
+        nu!(
+            cwd: dirs.test(),
+            "rm *.txt *.toml"
+        );
+
+        assert_eq!(
+            Playground::glob_vec(&format!("{}/*", dirs.test().display())),
+            Vec::<std::path::PathBuf>::new()
+        );
+    })
+}
+
+#[test]
+fn allows_doubly_specified_file() {
+    Playground::setup("rm_test_12", |dirs, sandbox| {
+        sandbox.with_files(vec![EmptyFile("yehuda.txt"), EmptyFile("jonathan.toml")]);
+
+        let actual = nu!(
+            cwd: dirs.test(),
+            "rm *.txt yehuda* *.toml"
+        );
+
+        assert_eq!(
+            Playground::glob_vec(&format!("{}/*", dirs.test().display())),
+            Vec::<std::path::PathBuf>::new()
+        );
+        assert!(!actual.out.contains("error"))
+    })
+}
+
+#[test]
+fn remove_files_from_two_parents_up_using_multiple_dots_and_glob() {
+    Playground::setup("rm_test_13", |dirs, sandbox| {
+        sandbox.with_files(vec![
+            EmptyFile("yehuda.txt"),
+            EmptyFile("jonathan.txt"),
+            EmptyFile("kevin.txt"),
+        ]);
+
+        sandbox.within("foo").mkdir("bar");
+
+        nu!(
+            cwd: dirs.test().join("foo/bar"),
+            "rm .../*.txt"
+        );
+
+        assert!(!files_exist_at(
+            vec!["yehuda.txt", "jonathan.txt", "kevin.txt"],
+            dirs.test()
+        ));
+    })
+}
+
+#[test]
+fn no_errors_if_attempting_to_delete_non_existent_file_with_f_flag() {
+    Playground::setup("rm_test_14", |dirs, _| {
+        let actual = nu!(
+            cwd: dirs.root(),
+            "rm -f non_existent_file.txt"
+        );
+
+        assert!(!actual.err.contains("no valid path"));
     })
 }

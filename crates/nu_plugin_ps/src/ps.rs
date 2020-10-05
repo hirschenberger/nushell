@@ -1,10 +1,13 @@
 use futures::{StreamExt, TryStreamExt};
 use heim::process::{self as process, Process, ProcessResult};
-use heim::units::{information, ratio, Ratio};
+use heim::units::{information, ratio, time, Ratio};
 use std::usize;
 
+use nu_errors::ShellError;
 use nu_protocol::{TaggedDictBuilder, UntaggedValue, Value};
 use nu_source::Tag;
+
+use num_bigint::BigInt;
 
 use std::time::Duration;
 
@@ -27,8 +30,16 @@ async fn usage(process: Process) -> ProcessResult<(process::Process, Ratio, proc
     Ok((process, usage_2 - usage_1, memory))
 }
 
-pub async fn ps(tag: Tag) -> Vec<Value> {
+pub async fn ps(tag: Tag, long: bool) -> Result<Vec<Value>, ShellError> {
     let processes = process::processes()
+        .await
+        .map_err(|_| {
+            ShellError::labeled_error(
+                "Unabled to get process list",
+                "could not load process list",
+                tag.span,
+            )
+        })?
         .map_ok(|process| {
             // Note that there is no `.await` here,
             // as we want to pass the returned future
@@ -36,7 +47,7 @@ pub async fn ps(tag: Tag) -> Vec<Value> {
             usage(process)
         })
         .try_buffer_unordered(usize::MAX);
-    pin_utils::pin_mut!(processes);
+    futures::pin_mut!(processes);
 
     let mut output = vec![];
     while let Some(res) = processes.next().await {
@@ -49,18 +60,49 @@ pub async fn ps(tag: Tag) -> Vec<Value> {
             if let Ok(status) = process.status().await {
                 dict.insert_untagged("status", UntaggedValue::string(format!("{:?}", status)));
             }
-            dict.insert_untagged("cpu", UntaggedValue::decimal(usage.get::<ratio::percent>()));
+            dict.insert_untagged(
+                "cpu",
+                UntaggedValue::decimal_from_float(usage.get::<ratio::percent>() as f64, tag.span),
+            );
             dict.insert_untagged(
                 "mem",
-                UntaggedValue::bytes(memory.rss().get::<information::byte>()),
+                UntaggedValue::filesize(memory.rss().get::<information::byte>()),
             );
             dict.insert_untagged(
                 "virtual",
-                UntaggedValue::bytes(memory.vms().get::<information::byte>()),
+                UntaggedValue::filesize(memory.vms().get::<information::byte>()),
             );
+            if long {
+                if let Ok(cpu_time) = process.cpu_time().await {
+                    let user_time = cpu_time.user().get::<time::nanosecond>().round() as i64;
+                    let system_time = cpu_time.system().get::<time::nanosecond>().round() as i64;
+
+                    dict.insert_untagged(
+                        "cpu_time",
+                        UntaggedValue::duration(BigInt::from(user_time + system_time)),
+                    )
+                }
+                if let Ok(parent_pid) = process.parent_pid().await {
+                    dict.insert_untagged("parent", UntaggedValue::int(parent_pid))
+                }
+
+                if let Ok(exe) = process.exe().await {
+                    dict.insert_untagged("exe", UntaggedValue::string(exe.to_string_lossy()))
+                }
+
+                #[cfg(not(windows))]
+                {
+                    if let Ok(command) = process.command().await {
+                        dict.insert_untagged(
+                            "command",
+                            UntaggedValue::string(command.to_os_string().to_string_lossy()),
+                        );
+                    }
+                }
+            }
             output.push(dict.into_value());
         }
     }
 
-    output
+    Ok(output)
 }

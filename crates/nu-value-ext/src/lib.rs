@@ -1,15 +1,16 @@
+use indexmap::set::IndexSet;
 use itertools::Itertools;
 use nu_errors::{ExpectedRange, ShellError};
 use nu_protocol::{
     ColumnPath, MaybeOwned, PathMember, Primitive, ShellTypeName, SpannedTypeName,
     UnspannedPathMember, UntaggedValue, Value,
 };
-use nu_source::{HasSpan, PrettyDebug, Spanned, SpannedItem, Tag, Tagged, TaggedItem};
+use nu_source::{
+    HasFallibleSpan, HasSpan, PrettyDebug, Span, Spanned, SpannedItem, Tag, Tagged, TaggedItem,
+};
 use num_traits::cast::ToPrimitive;
 
 pub trait ValueExt {
-    fn row_entries(&self) -> RowValueIter<'_>;
-    fn table_entries(&self) -> TableValueIter<'_>;
     fn into_parts(self) -> (UntaggedValue, Tag);
     fn get_data(&self, desc: &str) -> MaybeOwned<'_, Value>;
     fn get_data_by_key(&self, name: Spanned<&str>) -> Option<Value>;
@@ -17,7 +18,12 @@ pub trait ValueExt {
     fn get_data_by_column_path(
         &self,
         path: &ColumnPath,
-        callback: Box<dyn FnOnce((&Value, &PathMember, ShellError)) -> ShellError>,
+        callback: Box<dyn FnOnce(&Value, &PathMember, ShellError) -> ShellError>,
+    ) -> Result<Value, ShellError>;
+    fn swap_data_by_column_path(
+        &self,
+        path: &ColumnPath,
+        callback: Box<dyn FnOnce(&Value) -> Result<Value, ShellError>>,
     ) -> Result<Value, ShellError>;
     fn insert_data_at_path(&self, path: &str, new_value: Value) -> Option<Value>;
     fn insert_data_at_member(
@@ -41,14 +47,6 @@ pub trait ValueExt {
 }
 
 impl ValueExt for Value {
-    fn row_entries(&self) -> RowValueIter<'_> {
-        row_entries(self)
-    }
-
-    fn table_entries(&self) -> TableValueIter<'_> {
-        table_entries(self)
-    }
-
     fn into_parts(self) -> (UntaggedValue, Tag) {
         (self.value, self.tag)
     }
@@ -68,9 +66,17 @@ impl ValueExt for Value {
     fn get_data_by_column_path(
         &self,
         path: &ColumnPath,
-        callback: Box<dyn FnOnce((&Value, &PathMember, ShellError)) -> ShellError>,
+        get_error: Box<dyn FnOnce(&Value, &PathMember, ShellError) -> ShellError>,
     ) -> Result<Value, ShellError> {
-        get_data_by_column_path(self, path, callback)
+        get_data_by_column_path(self, path, get_error)
+    }
+
+    fn swap_data_by_column_path(
+        &self,
+        path: &ColumnPath,
+        callback: Box<dyn FnOnce(&Value) -> Result<Value, ShellError>>,
+    ) -> Result<Value, ShellError> {
+        swap_data_by_column_path(self, path, callback)
     }
 
     fn insert_data_at_path(&self, path: &str, new_value: Value) -> Option<Value> {
@@ -186,11 +192,14 @@ pub fn get_data_by_member(value: &Value, name: &PathMember) -> Result<Value, She
     }
 }
 
-pub fn get_data_by_column_path(
+pub fn get_data_by_column_path<F>(
     value: &Value,
     path: &ColumnPath,
-    callback: Box<dyn FnOnce((&Value, &PathMember, ShellError)) -> ShellError>,
-) -> Result<Value, ShellError> {
+    get_error: F,
+) -> Result<Value, ShellError>
+where
+    F: FnOnce(&Value, &PathMember, ShellError) -> ShellError,
+{
     let mut current = value.clone();
 
     for p in path.iter() {
@@ -198,11 +207,164 @@ pub fn get_data_by_column_path(
 
         match value {
             Ok(v) => current = v.clone(),
-            Err(e) => return Err(callback((&current, &p.clone(), e))),
+            Err(e) => return Err(get_error(&current, &p, e)),
         }
     }
 
     Ok(current)
+}
+
+pub fn swap_data_by_column_path<F>(
+    value: &Value,
+    path: &ColumnPath,
+    get_replacement: F,
+) -> Result<Value, ShellError>
+where
+    F: FnOnce(&Value) -> Result<Value, ShellError>,
+{
+    let fields = path.clone();
+
+    let to_replace =
+        get_data_by_column_path(&value, path, move |obj_source, column_path_tried, error| {
+            let path_members_span = fields.maybe_span().unwrap_or_else(Span::unknown);
+
+            match &obj_source.value {
+                UntaggedValue::Table(rows) => match column_path_tried {
+                    PathMember {
+                        unspanned: UnspannedPathMember::String(column),
+                        ..
+                    } => {
+                        let primary_label = format!("There isn't a column named '{}'", &column);
+
+                        let suggestions: IndexSet<_> = rows
+                            .iter()
+                            .filter_map(|r| {
+                                nu_protocol::did_you_mean(&r, column_path_tried.as_string())
+                            })
+                            .map(|s| s[0].to_owned())
+                            .collect();
+                        let mut existing_columns: IndexSet<_> = IndexSet::default();
+                        let mut names: Vec<String> = vec![];
+
+                        for row in rows {
+                            for field in row.data_descriptors() {
+                                if !existing_columns.contains(&field[..]) {
+                                    existing_columns.insert(field.clone());
+                                    names.push(field);
+                                }
+                            }
+                        }
+
+                        if names.is_empty() {
+                            return ShellError::labeled_error_with_secondary(
+                                "Unknown column",
+                                primary_label,
+                                column_path_tried.span,
+                                "Appears to contain rows. Try indexing instead.",
+                                column_path_tried.span.since(path_members_span),
+                            );
+                        } else {
+                            return ShellError::labeled_error_with_secondary(
+                                "Unknown column",
+                                primary_label,
+                                column_path_tried.span,
+                                format!(
+                                    "Perhaps you meant '{}'? Columns available: {}",
+                                    suggestions
+                                        .iter()
+                                        .map(|x| x.to_owned())
+                                        .collect::<Vec<String>>()
+                                        .join(","),
+                                    names.join(", ")
+                                ),
+                                column_path_tried.span.since(path_members_span),
+                            );
+                        };
+                    }
+                    PathMember {
+                        unspanned: UnspannedPathMember::Int(idx),
+                        ..
+                    } => {
+                        let total = rows.len();
+
+                        let secondary_label = if total == 1 {
+                            "The table only has 1 row".to_owned()
+                        } else {
+                            format!("The table only has {} rows (0 to {})", total, total - 1)
+                        };
+
+                        return ShellError::labeled_error_with_secondary(
+                            "Row not found",
+                            format!("There isn't a row indexed at {}", idx),
+                            column_path_tried.span,
+                            secondary_label,
+                            column_path_tried.span.since(path_members_span),
+                        );
+                    }
+                },
+                UntaggedValue::Row(columns) => match column_path_tried {
+                    PathMember {
+                        unspanned: UnspannedPathMember::String(column),
+                        ..
+                    } => {
+                        let primary_label = format!("There isn't a column named '{}'", &column);
+
+                        if let Some(suggestions) =
+                            nu_protocol::did_you_mean(&obj_source, column_path_tried.as_string())
+                        {
+                            return ShellError::labeled_error_with_secondary(
+                                "Unknown column",
+                                primary_label,
+                                column_path_tried.span,
+                                format!(
+                                    "Perhaps you meant '{}'? Columns available: {}",
+                                    suggestions[0],
+                                    &obj_source.data_descriptors().join(",")
+                                ),
+                                column_path_tried.span.since(path_members_span),
+                            );
+                        }
+                    }
+                    PathMember {
+                        unspanned: UnspannedPathMember::Int(idx),
+                        ..
+                    } => {
+                        return ShellError::labeled_error_with_secondary(
+                            "No rows available",
+                            format!("A row at '{}' can't be indexed.", &idx),
+                            column_path_tried.span,
+                            format!(
+                                "Appears to contain columns. Columns available: {}",
+                                columns.keys().join(",")
+                            ),
+                            column_path_tried.span.since(path_members_span),
+                        )
+                    }
+                },
+                _ => {}
+            }
+
+            if let Some(suggestions) =
+                nu_protocol::did_you_mean(&obj_source, column_path_tried.as_string())
+            {
+                return ShellError::labeled_error(
+                    "Unknown column",
+                    format!("did you mean '{}'?", suggestions[0]),
+                    column_path_tried.span.since(path_members_span),
+                );
+            }
+
+            error
+        });
+
+    let to_replace = to_replace?;
+    let replacement = get_replacement(&to_replace)?;
+
+    value
+        .replace_data_at_column_path(&path, replacement)
+        .ok_or_else(|| {
+            ShellError::labeled_error("missing column-path", "missing column-path", value.tag.span)
+        })
 }
 
 pub fn insert_data_at_path(value: &Value, path: &str, new_value: Value) -> Option<Value> {
@@ -228,7 +390,7 @@ pub fn insert_data_at_path(value: &Value, path: &str, new_value: Value) -> Optio
                         if let UntaggedValue::Row(o) = &mut next.value {
                             o.entries.insert(
                                 split_path[idx + 1].to_string(),
-                                new_value.value.clone().into_value(&value.tag),
+                                new_value.value.into_value(&value.tag),
                             );
                         }
                         return Some(new_obj.clone());
@@ -322,7 +484,7 @@ pub fn insert_data_at_column_path(
         Ok(original)
     } else {
         Err(ShellError::untagged_runtime_error(
-            "Internal error: could not split column-path correctly",
+            "Internal error: could not split column path correctly",
         ))
     }
 }
@@ -402,26 +564,19 @@ pub fn as_path_member(value: &Value) -> Result<PathMember, ShellError> {
 pub fn as_string(value: &Value) -> Result<String, ShellError> {
     match &value.value {
         UntaggedValue::Primitive(Primitive::String(s)) => Ok(s.clone()),
+        UntaggedValue::Primitive(Primitive::Date(dt)) => Ok(dt.format("%Y-%m-%d").to_string()),
         UntaggedValue::Primitive(Primitive::Boolean(x)) => Ok(format!("{}", x)),
         UntaggedValue::Primitive(Primitive::Decimal(x)) => Ok(format!("{}", x)),
         UntaggedValue::Primitive(Primitive::Int(x)) => Ok(format!("{}", x)),
-        UntaggedValue::Primitive(Primitive::Bytes(x)) => Ok(format!("{}", x)),
+        UntaggedValue::Primitive(Primitive::Filesize(x)) => Ok(format!("{}", x)),
         UntaggedValue::Primitive(Primitive::Path(x)) => Ok(format!("{}", x.display())),
-        UntaggedValue::Primitive(Primitive::ColumnPath(path)) => {
-            let joined = path
-                .iter()
-                .map(|member| match &member.unspanned {
-                    UnspannedPathMember::String(name) => name.to_string(),
-                    UnspannedPathMember::Int(n) => format!("{}", n),
-                })
-                .join(".");
-
-            if joined.contains(' ') {
-                Ok(format!("\"{}\"", joined))
-            } else {
-                Ok(joined)
-            }
-        }
+        UntaggedValue::Primitive(Primitive::ColumnPath(path)) => Ok(path
+            .iter()
+            .map(|member| match &member.unspanned {
+                UnspannedPathMember::String(name) => name.to_string(),
+                UnspannedPathMember::Int(n) => format!("{}", n),
+            })
+            .join(".")),
 
         // TODO: this should definitely be more general with better errors
         other => Err(ShellError::labeled_error(
@@ -532,54 +687,5 @@ pub(crate) fn get_mut_data_by_member<'value>(
             }
         },
         _ => None,
-    }
-}
-
-pub enum RowValueIter<'a> {
-    Empty,
-    Entries(indexmap::map::Iter<'a, String, Value>),
-}
-
-pub enum TableValueIter<'a> {
-    Empty,
-    Entries(std::slice::Iter<'a, Value>),
-}
-
-impl<'a> Iterator for RowValueIter<'a> {
-    type Item = (&'a String, &'a Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            RowValueIter::Empty => None,
-            RowValueIter::Entries(iter) => iter.next(),
-        }
-    }
-}
-
-impl<'a> Iterator for TableValueIter<'a> {
-    type Item = &'a Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            TableValueIter::Empty => None,
-            TableValueIter::Entries(iter) => iter.next(),
-        }
-    }
-}
-
-pub fn table_entries(value: &Value) -> TableValueIter<'_> {
-    match &value.value {
-        UntaggedValue::Table(t) => TableValueIter::Entries(t.iter()),
-        _ => TableValueIter::Empty,
-    }
-}
-
-pub fn row_entries(value: &Value) -> RowValueIter<'_> {
-    match &value.value {
-        UntaggedValue::Row(o) => {
-            let iter = o.entries.iter();
-            RowValueIter::Entries(iter)
-        }
-        _ => RowValueIter::Empty,
     }
 }

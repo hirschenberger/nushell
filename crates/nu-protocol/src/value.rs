@@ -2,25 +2,31 @@ pub mod column_path;
 mod convert;
 mod debug;
 pub mod dict;
+pub mod did_you_mean;
 pub mod evaluate;
+pub mod iter;
 pub mod primitive;
 pub mod range;
 mod serde_bigdecimal;
 mod serde_bigint;
 
+use crate::hir;
 use crate::type_name::{ShellTypeName, SpannedTypeName};
 use crate::value::dict::Dictionary;
-use crate::value::evaluate::Evaluate;
+use crate::value::iter::{RowValueIter, TableValueIter};
 use crate::value::primitive::Primitive;
 use crate::value::range::{Range, RangeInclusion};
 use crate::{ColumnPath, PathMember};
 use bigdecimal::BigDecimal;
+use bigdecimal::FromPrimitive;
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use nu_errors::ShellError;
 use nu_source::{AnchorLocation, HasSpan, Span, Spanned, Tag};
 use num_bigint::BigInt;
+use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -29,35 +35,26 @@ use std::time::SystemTime;
 pub enum UntaggedValue {
     /// A primitive (or fundamental) type of values
     Primitive(Primitive),
+
     /// A table row
     Row(Dictionary),
+
     /// A full inner (or embedded) table
     Table(Vec<Value>),
 
     /// An error value that represents an error that occurred as the values in the pipeline were built
     Error(ShellError),
 
-    /// A block of Nu code, eg `{ ls | get name }`
-    Block(Evaluate),
+    /// A block of Nu code, eg `{ ls | get name ; echo "done" }`
+    Block(hir::Block),
 }
 
 impl UntaggedValue {
-    /// Tags an UntaggedValue so that it can become a Value
-    pub fn retag(self, tag: impl Into<Tag>) -> Value {
-        Value {
-            value: self,
-            tag: tag.into(),
-        }
-    }
-
     /// Get the corresponding descriptors (column names) associated with this value
     pub fn data_descriptors(&self) -> Vec<String> {
         match self {
-            UntaggedValue::Primitive(_) => vec![],
             UntaggedValue::Row(columns) => columns.entries.keys().map(|x| x.to_string()).collect(),
-            UntaggedValue::Block(_) => vec![],
-            UntaggedValue::Table(_) => vec![],
-            UntaggedValue::Error(_) => vec![],
+            _ => vec![],
         }
     }
 
@@ -79,10 +76,27 @@ impl UntaggedValue {
 
     /// Returns true if this value represents boolean true
     pub fn is_true(&self) -> bool {
-        match self {
-            UntaggedValue::Primitive(Primitive::Boolean(true)) => true,
-            _ => false,
-        }
+        matches!(self, UntaggedValue::Primitive(Primitive::Boolean(true)))
+    }
+
+    /// Returns true if this value represents a filesize
+    pub fn is_filesize(&self) -> bool {
+        matches!(self, UntaggedValue::Primitive(Primitive::Filesize(_)))
+    }
+
+    /// Returns true if this value represents a duration
+    pub fn is_duration(&self) -> bool {
+        matches!(self, UntaggedValue::Primitive(Primitive::Duration(_)))
+    }
+
+    /// Returns true if this value represents a table
+    pub fn is_table(&self) -> bool {
+        matches!(self, UntaggedValue::Table(_))
+    }
+
+    /// Returns true if this value represents a string
+    pub fn is_string(&self) -> bool {
+        matches!(self, UntaggedValue::Primitive(Primitive::String(_)))
     }
 
     /// Returns true if the value represents something other than Nothing
@@ -92,18 +106,12 @@ impl UntaggedValue {
 
     /// Returns true if the value represents Nothing
     pub fn is_none(&self) -> bool {
-        match self {
-            UntaggedValue::Primitive(Primitive::Nothing) => true,
-            _ => false,
-        }
+        matches!(self, UntaggedValue::Primitive(Primitive::Nothing))
     }
 
     /// Returns true if the value represents an error
     pub fn is_error(&self) -> bool {
-        match self {
-            UntaggedValue::Error(_err) => true,
-            _ => false,
-        }
+        matches!(self, UntaggedValue::Error(_err))
     }
 
     /// Expect this value to be an error and return it
@@ -119,6 +127,19 @@ impl UntaggedValue {
         match self {
             UntaggedValue::Primitive(Primitive::String(string)) => &string[..],
             _ => panic!("expect_string assumes that the value must be a string"),
+        }
+    }
+
+    /// Expect this value to be an integer and return it
+    pub fn expect_int(&self) -> i64 {
+        let big_int = match self {
+            UntaggedValue::Primitive(Primitive::Int(int)) => Some(int),
+            _ => None,
+        };
+
+        match big_int.and_then(|i| i.to_i64()) {
+            Some(i) => i,
+            _ => panic!("expect_int assumes that the value must be a integer"),
         }
     }
 
@@ -164,14 +185,28 @@ impl UntaggedValue {
         UntaggedValue::Primitive(Primitive::Path(s.into()))
     }
 
-    /// Helper for creating bytesize values
-    pub fn bytes(s: impl Into<u64>) -> UntaggedValue {
-        UntaggedValue::Primitive(Primitive::Bytes(s.into()))
+    /// Helper for creating filesize values
+    pub fn filesize(s: impl Into<u64>) -> UntaggedValue {
+        UntaggedValue::Primitive(Primitive::Filesize(s.into()))
     }
 
     /// Helper for creating decimal values
-    pub fn decimal(s: impl Into<BigDecimal>) -> UntaggedValue {
-        UntaggedValue::Primitive(Primitive::Decimal(s.into()))
+    pub fn decimal(s: BigDecimal) -> UntaggedValue {
+        UntaggedValue::Primitive(Primitive::Decimal(s))
+    }
+
+    /// Helper for creating decimal values
+    pub fn decimal_from_float(f: f64, span: Span) -> UntaggedValue {
+        let dec = BigDecimal::from_f64(f);
+
+        match dec {
+            Some(dec) => UntaggedValue::Primitive(Primitive::Decimal(dec)),
+            None => UntaggedValue::Error(ShellError::labeled_error(
+                "Can not convert f64 to big decimal",
+                "can not create decimal",
+                span,
+            )),
+        }
     }
 
     /// Helper for creating binary (non-text) buffer values
@@ -188,13 +223,13 @@ impl UntaggedValue {
     }
 
     /// Helper for creating boolean values
-    pub fn boolean(s: impl Into<bool>) -> UntaggedValue {
-        UntaggedValue::Primitive(Primitive::Boolean(s.into()))
+    pub fn boolean(b: impl Into<bool>) -> UntaggedValue {
+        UntaggedValue::Primitive(Primitive::Boolean(b.into()))
     }
 
     /// Helper for creating date duration values
-    pub fn duration(secs: u64) -> UntaggedValue {
-        UntaggedValue::Primitive(Primitive::Duration(secs))
+    pub fn duration(nanos: BigInt) -> UntaggedValue {
+        UntaggedValue::Primitive(Primitive::Duration(nanos))
     }
 
     /// Helper for creating datatime values
@@ -213,10 +248,22 @@ impl UntaggedValue {
 }
 
 /// The fundamental structured value that flows through the pipeline, with associated metadata
-#[derive(Debug, Clone, PartialOrd, PartialEq, Ord, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialOrd, Ord, Eq, Serialize, Deserialize)]
 pub struct Value {
     pub value: UntaggedValue,
     pub tag: Tag,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
 }
 
 /// Overload deferencing to give back the UntaggedValue inside of a Value
@@ -249,7 +296,44 @@ impl Value {
         match &self.value {
             UntaggedValue::Primitive(Primitive::String(string)) => Ok(string.clone()),
             UntaggedValue::Primitive(Primitive::Line(line)) => Ok(line.clone() + "\n"),
+            UntaggedValue::Primitive(Primitive::Path(path)) => {
+                Ok(path.to_string_lossy().to_string())
+            }
             _ => Err(ShellError::type_error("string", self.spanned_type_name())),
+        }
+    }
+
+    pub fn convert_to_string(&self) -> String {
+        match &self.value {
+            UntaggedValue::Primitive(Primitive::String(s)) => s.clone(),
+            UntaggedValue::Primitive(Primitive::Date(dt)) => dt.format("%Y-%m-%d").to_string(),
+            UntaggedValue::Primitive(Primitive::Boolean(x)) => format!("{}", x),
+            UntaggedValue::Primitive(Primitive::Decimal(x)) => format!("{}", x),
+            UntaggedValue::Primitive(Primitive::Int(x)) => format!("{}", x),
+            UntaggedValue::Primitive(Primitive::Filesize(x)) => format!("{}", x),
+            UntaggedValue::Primitive(Primitive::Path(x)) => format!("{}", x.display()),
+            UntaggedValue::Primitive(Primitive::ColumnPath(path)) => {
+                let joined: String = path
+                    .iter()
+                    .map(|member| member.as_string())
+                    .collect::<Vec<String>>()
+                    .join(".");
+
+                if joined.contains(' ') {
+                    format!("\"{}\"", joined)
+                } else {
+                    joined
+                }
+            }
+
+            _ => String::from(""),
+        }
+    }
+
+    pub fn format(&self, fmt: &str) -> Result<String, ShellError> {
+        match &self.value {
+            UntaggedValue::Primitive(Primitive::Date(dt)) => Ok(dt.format(fmt).to_string()),
+            _ => Err(ShellError::type_error("date", self.spanned_type_name())),
         }
     }
 
@@ -281,6 +365,11 @@ impl Value {
         }
     }
 
+    /// View the Value as a Primitive value, if possible
+    pub fn is_primitive(&self) -> bool {
+        matches!(&self.value, UntaggedValue::Primitive(_))
+    }
+
     /// View the Value as unsigned 64-bit, if possible
     pub fn as_u64(&self) -> Result<u64, ShellError> {
         match &self.value {
@@ -296,13 +385,48 @@ impl Value {
             _ => Err(ShellError::type_error("boolean", self.spanned_type_name())),
         }
     }
+
+    /// Returns an iterator of the values rows
+    pub fn table_entries(&self) -> TableValueIter<'_> {
+        crate::value::iter::table_entries(&self)
+    }
+
+    /// Returns an iterator of the value's cells
+    pub fn row_entries(&self) -> RowValueIter<'_> {
+        crate::value::iter::row_entries(&self)
+    }
+
+    /// Returns true if the value is empty
+    pub fn is_empty(&self) -> bool {
+        match &self {
+            Value {
+                value: UntaggedValue::Primitive(p),
+                ..
+            } => p.is_empty(),
+            Value {
+                value: UntaggedValue::Table(rows),
+                ..
+            } => rows.is_empty(),
+            r
+            @
+            Value {
+                value: UntaggedValue::Row(_),
+                ..
+            } => r.row_entries().all(|(_, value)| value.is_empty()),
+            _ => false,
+        }
+    }
+
+    pub fn nothing() -> Value {
+        UntaggedValue::nothing().into_untagged_value()
+    }
 }
 
-impl Into<Value> for String {
-    fn into(self) -> Value {
-        let end = self.len();
+impl From<String> for Value {
+    fn from(s: String) -> Value {
+        let end = s.len();
         Value {
-            value: self.into(),
+            value: s.into(),
             tag: Tag {
                 anchor: None,
                 span: Span::new(0, end),
@@ -311,17 +435,49 @@ impl Into<Value> for String {
     }
 }
 
-impl Into<UntaggedValue> for &str {
-    /// Convert a string slice into an UntaggedValue
-    fn into(self) -> UntaggedValue {
-        UntaggedValue::Primitive(Primitive::String(self.to_string()))
+impl From<&str> for Value {
+    fn from(s: &str) -> Value {
+        let end = s.len();
+        Value {
+            value: s.into(),
+            tag: Tag {
+                anchor: None,
+                span: Span::new(0, end),
+            },
+        }
     }
 }
 
-impl Into<UntaggedValue> for Value {
+impl<T> From<T> for UntaggedValue
+where
+    T: Into<Primitive>,
+{
+    /// Convert a Primitive to an UntaggedValue
+    fn from(input: T) -> UntaggedValue {
+        UntaggedValue::Primitive(input.into())
+    }
+}
+
+impl From<ShellError> for UntaggedValue {
+    fn from(e: ShellError) -> Self {
+        UntaggedValue::Error(e)
+    }
+}
+
+impl From<UntaggedValue> for Value {
+    /// Convert an UntaggedValue into a Value with a default tag
+    fn from(value: UntaggedValue) -> Value {
+        Value {
+            value,
+            tag: Tag::default(),
+        }
+    }
+}
+
+impl From<Value> for UntaggedValue {
     /// Convert a Value into an UntaggedValue
-    fn into(self) -> UntaggedValue {
-        self.value
+    fn from(v: Value) -> UntaggedValue {
+        v.value
     }
 }
 
@@ -359,35 +515,15 @@ impl ShellTypeName for UntaggedValue {
     }
 }
 
-impl From<Primitive> for UntaggedValue {
-    /// Convert a Primitive to an UntaggedValue
-    fn from(input: Primitive) -> UntaggedValue {
-        UntaggedValue::Primitive(input)
-    }
-}
-
-impl From<String> for UntaggedValue {
-    /// Convert a String to an UntaggedValue
-    fn from(input: String) -> UntaggedValue {
-        UntaggedValue::Primitive(Primitive::String(input))
-    }
-}
-
-impl From<ShellError> for UntaggedValue {
-    fn from(e: ShellError) -> Self {
-        UntaggedValue::Error(e)
-    }
-}
-
 pub fn merge_descriptors(values: &[Value]) -> Vec<String> {
     let mut ret: Vec<String> = vec![];
-    let value_column = "<value>".to_string();
+    let value_column = "".to_string();
     for value in values {
         let descs = value.data_descriptors();
 
         if descs.is_empty() {
             if !ret.contains(&value_column) {
-                ret.push("<value>".to_string());
+                ret.push("".to_string());
             }
         } else {
             for desc in value.data_descriptors() {

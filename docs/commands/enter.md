@@ -7,10 +7,10 @@ This command creates a new shell and begin at this path.
 ```shell
 /home/foobar> cat user.json
 {
-	"Name": "Peter",
-	"Age": 30,
-	"Telephone": 88204828,
-	"Country": "Singapore"
+    "Name": "Peter",
+    "Age": 30,
+    "Telephone": 88204828,
+    "Country": "Singapore"
 }
 /home/foobar> enter user.json
 /> ls
@@ -36,4 +36,23 @@ It also provides the ability to work with multiple directories at the same time.
 /tmp> p
 /> n
 /tmp>
+```
+
+## Note
+
+If you `enter` a JSON file with multiple a top-level list, this will open one new shell for each list element.
+
+```shell
+/private/tmp> printf "1\\n2\\n3\\n" | lines | save foo.json
+/private/tmp> enter foo.json
+/> shells
+───┬────────┬─────────────────────────┬──────────────
+ # │ active │ name                    │ path
+───┼────────┼─────────────────────────┼──────────────
+ 0 │        │ filesystem              │ /private/tmp
+ 1 │        │ {/private/tmp/foo.json} │ /
+ 2 │        │ {/private/tmp/foo.json} │ /
+ 3 │ X      │ {/private/tmp/foo.json} │ /
+───┴────────┴─────────────────────────┴──────────────
+/>
 ```

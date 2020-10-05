@@ -1,22 +1,21 @@
-use crate::commands::PerItemCommand;
-use crate::context::CommandRegistry;
+use crate::command_registry::CommandRegistry;
+use crate::commands::WholeStreamCommand;
+use crate::evaluate::evaluate_baseline_expr;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{
-    CallInfo, ColumnPath, ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value,
-};
+use nu_protocol::{ReturnSuccess, Scope, Signature, SyntaxShape, UntaggedValue};
 use nu_source::Tagged;
-use nu_value_ext::{as_column_path, get_data_by_column_path};
 use std::borrow::Borrow;
-
-use nom::{
-    bytes::complete::{tag, take_while},
-    IResult,
-};
 
 pub struct Format;
 
-impl PerItemCommand for Format {
+#[derive(Deserialize)]
+pub struct FormatArgs {
+    pattern: Tagged<String>,
+}
+
+#[async_trait]
+impl WholeStreamCommand for Format {
     fn name(&self) -> &str {
         "format"
     }
@@ -24,7 +23,7 @@ impl PerItemCommand for Format {
     fn signature(&self) -> Signature {
         Signature::build("format").required(
             "pattern",
-            SyntaxShape::Any,
+            SyntaxShape::String,
             "the pattern to output. Eg) \"{foo}: {bar}\"",
         )
     }
@@ -33,69 +32,75 @@ impl PerItemCommand for Format {
         "Format columns into a string using a simple pattern."
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        _raw_args: &RawCommandArgs,
-        value: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        //let value_tag = value.tag();
-        let pattern = call_info.args.expect_nth(0)?;
-        let pattern_tag = pattern.tag.clone();
-        let pattern = pattern.as_string()?;
+        format_command(args, registry).await
+    }
 
-        let format_pattern = format(&pattern).map_err(|_| {
-            ShellError::labeled_error(
-                "Could not create format pattern",
-                "could not create format pattern",
-                &pattern_tag,
-            )
-        })?;
-        let commands = format_pattern.1;
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Print filenames with their sizes",
+            example: "ls | format '{name}: {size}'",
+            result: None,
+        }]
+    }
+}
 
-        let output = match value {
-            value
-            @
-            Value {
-                value: UntaggedValue::Row(_),
-                ..
-            } => {
-                let mut output = String::new();
+async fn format_command(
+    args: CommandArgs,
+    registry: &CommandRegistry,
+) -> Result<OutputStream, ShellError> {
+    let registry = Arc::new(registry.clone());
+    let scope = args.call_info.scope.clone();
+    let (FormatArgs { pattern }, input) = args.process(&registry).await?;
 
-                for command in &commands {
+    let format_pattern = format(&pattern);
+    let commands = Arc::new(format_pattern);
+
+    Ok(input
+        .then(move |value| {
+            let mut output = String::new();
+            let commands = commands.clone();
+            let registry = registry.clone();
+            let scope = scope.clone();
+
+            async move {
+                for command in &*commands {
                     match command {
                         FormatCommand::Text(s) => {
-                            output.push_str(s);
+                            output.push_str(&s);
                         }
                         FormatCommand::Column(c) => {
-                            let key = to_column_path(&c, &pattern_tag)?;
-
-                            let fetcher = get_data_by_column_path(
-                                &value,
-                                &key,
-                                Box::new(move |(_, _, error)| error),
+                            // FIXME: use the correct spans
+                            let full_column_path = nu_parser::parse_full_column_path(
+                                &(c.to_string()).spanned(Span::unknown()),
+                                &*registry,
                             );
 
-                            if let Ok(c) = fetcher {
+                            let result = evaluate_baseline_expr(
+                                &full_column_path.0,
+                                &registry,
+                                Scope::append_it(scope.clone(), value.clone()),
+                            )
+                            .await;
+
+                            if let Ok(c) = result {
                                 output
                                     .push_str(&value::format_leaf(c.borrow()).plain_string(100_000))
+                            } else {
+                                // That column doesn't match, so don't emit anything
                             }
-                            // That column doesn't match, so don't emit anything
                         }
                     }
                 }
 
-                output
+                ReturnSuccess::value(UntaggedValue::string(output).into_untagged_value())
             }
-            _ => String::new(),
-        };
-
-        Ok(futures::stream::iter(vec![ReturnSuccess::value(
-            UntaggedValue::string(output).into_untagged_value(),
-        )])
+        })
         .to_output_stream())
-    }
 }
 
 #[derive(Debug)]
@@ -104,54 +109,54 @@ enum FormatCommand {
     Column(String),
 }
 
-fn format(input: &str) -> IResult<&str, Vec<FormatCommand>> {
+fn format(input: &str) -> Vec<FormatCommand> {
     let mut output = vec![];
 
-    let mut loop_input = input;
+    let mut loop_input = input.chars();
     loop {
-        let (input, before) = take_while(|c| c != '{')(loop_input)?;
+        let mut before = String::new();
+
+        while let Some(c) = loop_input.next() {
+            if c == '{' {
+                break;
+            }
+            before.push(c);
+        }
+
         if !before.is_empty() {
             output.push(FormatCommand::Text(before.to_string()));
         }
-        if input != "" {
-            // Look for column as we're now at one
-            let (input, _) = tag("{")(input)?;
-            let (input, column) = take_while(|c| c != '}')(input)?;
-            let (input, _) = tag("}")(input)?;
+        // Look for column as we're now at one
+        let mut column = String::new();
 
-            output.push(FormatCommand::Column(column.to_string()));
-            loop_input = input;
-        } else {
-            loop_input = input;
+        while let Some(c) = loop_input.next() {
+            if c == '}' {
+                break;
+            }
+            column.push(c);
         }
-        if loop_input == "" {
+
+        if !column.is_empty() {
+            output.push(FormatCommand::Column(column.to_string()));
+        }
+
+        if before.is_empty() && column.is_empty() {
             break;
         }
     }
 
-    Ok((loop_input, output))
+    output
 }
 
-fn to_column_path(
-    path_members: &str,
-    tag: impl Into<Tag>,
-) -> Result<Tagged<ColumnPath>, ShellError> {
-    let tag = tag.into();
+#[cfg(test)]
+mod tests {
+    use super::Format;
+    use super::ShellError;
 
-    as_column_path(
-        &UntaggedValue::Table(
-            path_members
-                .split('.')
-                .map(|x| {
-                    let member = match x.parse::<u64>() {
-                        Ok(v) => UntaggedValue::int(v),
-                        Err(_) => UntaggedValue::string(x),
-                    };
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
 
-                    member.into_value(&tag)
-                })
-                .collect(),
-        )
-        .into_value(&tag),
-    )
+        Ok(test_examples(Format {})?)
+    }
 }

@@ -1,8 +1,8 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape, UntaggedValue, Value};
 use nu_source::Tagged;
 
 pub struct Last;
@@ -12,6 +12,7 @@ pub struct LastArgs {
     rows: Option<Tagged<u64>>,
 }
 
+#[async_trait]
 impl WholeStreamCommand for Last {
     fn name(&self) -> &str {
         "last"
@@ -29,33 +30,65 @@ impl WholeStreamCommand for Last {
         "Show only the last number of rows."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, last)?.run()
+        last(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Get the last row",
+                example: "echo [1 2 3] | last",
+                result: Some(vec![Value::from(UntaggedValue::from(BigInt::from(3)))]),
+            },
+            Example {
+                description: "Get the last three rows",
+                example: "echo [1 2 3 4 5] | last 3",
+                result: Some(vec![
+                    UntaggedValue::int(3).into(),
+                    UntaggedValue::int(4).into(),
+                    UntaggedValue::int(5).into(),
+                ]),
+            },
+        ]
     }
 }
 
-fn last(LastArgs { rows }: LastArgs, context: RunnableContext) -> Result<OutputStream, ShellError> {
-    let stream = async_stream! {
-        let v: Vec<_> = context.input.into_vec().await;
+async fn last(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let (LastArgs { rows }, input) = args.process(&registry).await?;
+    let v: Vec<_> = input.into_vec().await;
 
-        let rows_desired = if let Some(quantity) = rows {
-            *quantity
-        } else {
-         1
-        };
-
-        let count = (rows_desired as usize);
-        if count < v.len() {
-            let k = v.len() - count;
-            for x in v[k..].iter() {
-                let y: Value = x.clone();
-                yield ReturnSuccess::value(y)
-            }
-        }
+    let end_rows_desired = if let Some(quantity) = rows {
+        *quantity as usize
+    } else {
+        1
     };
-    Ok(stream.to_output_stream())
+
+    let beginning_rows_to_skip = if end_rows_desired < v.len() {
+        v.len() - end_rows_desired
+    } else {
+        0
+    };
+
+    let iter = v.into_iter().skip(beginning_rows_to_skip);
+
+    Ok(futures::stream::iter(iter).to_output_stream())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Last;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Last {})?)
+    }
 }

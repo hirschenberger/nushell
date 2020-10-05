@@ -1,9 +1,10 @@
 use clap::{App, Arg};
 use log::LevelFilter;
+use nu_cli::create_default_context;
+use nu_cli::utils::test_bins as binaries;
 use std::error::Error;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
-use std::sync::atomic::Ordering;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = App::new("nushell")
@@ -14,6 +15,21 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .long("loglevel")
                 .value_name("LEVEL")
                 .possible_values(&["error", "warn", "info", "debug", "trace"])
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("skip-plugins")
+                .hidden(true)
+                .long("skip-plugins")
+                .multiple(false)
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("testbin")
+                .hidden(true)
+                .long("testbin")
+                .value_name("TESTBIN")
+                .possible_values(&["cococo", "iecho", "fail", "nonu", "chop"])
                 .takes_value(true),
         )
         .arg(
@@ -46,7 +62,26 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .help("the nu script to run")
                 .index(1),
         )
+        .arg(
+            Arg::with_name("args")
+                .help("positional args (used by --testbin)")
+                .index(2)
+                .multiple(true),
+        )
         .get_matches();
+
+    if let Some(bin) = matches.value_of("testbin") {
+        match bin {
+            "cococo" => binaries::cococo(),
+            "iecho" => binaries::iecho(),
+            "fail" => binaries::fail(),
+            "nonu" => binaries::nonu(),
+            "chop" => binaries::chop(),
+            _ => unreachable!(),
+        }
+
+        return Ok(());
+    }
 
     let loglevel = match matches.value_of("loglevel") {
         None => LevelFilter::Warn,
@@ -89,28 +124,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     match matches.values_of("commands") {
         None => {}
         Some(values) => {
-            let mut syncer = nu_cli::EnvironmentSyncer::new();
-            let mut context = nu_cli::create_default_context(&mut syncer)?;
-
-            let _ = nu_cli::load_plugins(&mut context);
-
-            let cc = context.ctrl_c.clone();
-
-            ctrlc::set_handler(move || {
-                cc.store(true, Ordering::SeqCst);
-            })
-            .expect("Error setting Ctrl-C handler");
-
-            if context.ctrl_c.load(Ordering::SeqCst) {
-                context.ctrl_c.store(false, Ordering::SeqCst);
-            }
-            for item in values {
-                futures::executor::block_on(nu_cli::run_pipeline_standalone(
-                    item.into(),
-                    matches.is_present("stdin"),
-                    &mut context,
-                ))?;
-            }
+            let pipelines: Vec<String> = values.map(|x| x.to_string()).collect();
+            futures::executor::block_on(nu_cli::run_vec_of_pipelines(
+                pipelines,
+                matches.is_present("stdin"),
+            ))?;
             return Ok(());
         }
     }
@@ -119,40 +137,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(script) => {
             let file = File::open(script)?;
             let reader = BufReader::new(file);
-            let mut syncer = nu_cli::EnvironmentSyncer::new();
-            let mut context = nu_cli::create_default_context(&mut syncer)?;
+            let pipelines: Vec<String> = reader
+                .lines()
+                .filter_map(|x| {
+                    if let Ok(x) = x {
+                        if !x.starts_with('#') {
+                            Some(x)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
-            let _ = nu_cli::load_plugins(&mut context);
-
-            let cc = context.ctrl_c.clone();
-
-            ctrlc::set_handler(move || {
-                cc.store(true, Ordering::SeqCst);
-            })
-            .expect("Error setting Ctrl-C handler");
-
-            if context.ctrl_c.load(Ordering::SeqCst) {
-                context.ctrl_c.store(false, Ordering::SeqCst);
-            }
-            for line in reader.lines() {
-                let line = line?;
-                if !line.starts_with('#') {
-                    futures::executor::block_on(nu_cli::run_pipeline_standalone(
-                        line,
-                        matches.is_present("stdin"),
-                        &mut context,
-                    ))?;
-                }
-            }
+            futures::executor::block_on(nu_cli::run_vec_of_pipelines(
+                pipelines,
+                matches.is_present("stdin"),
+            ))?;
             return Ok(());
         }
 
         None => {
-            println!(
-                "Welcome to Nushell {} (type 'help' for more info)",
-                clap::crate_version!()
-            );
-            futures::executor::block_on(nu_cli::cli())?;
+            let mut context = create_default_context(true)?;
+
+            if !matches.is_present("skip-plugins") {
+                let _ = nu_cli::register_plugins(&mut context);
+            }
+
+            #[cfg(feature = "rustyline-support")]
+            {
+                futures::executor::block_on(nu_cli::cli(context))?;
+            }
+
+            #[cfg(not(feature = "rustyline-support"))]
+            {
+                println!("Nushell needs the 'rustyline-support' feature for CLI support");
+            }
         }
     }
 

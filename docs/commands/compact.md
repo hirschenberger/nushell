@@ -3,11 +3,12 @@
 This command allows us to filters out rows with empty columns. Other commands are capable of feeding `compact` with their output through pipelines.
 
 ## Usage
+
 ```shell
 > [input-command] | compact [column-name]
 ```
 
-## Examples 
+## Examples
 
 Let's say we have a table like this:
 

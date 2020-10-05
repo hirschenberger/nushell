@@ -27,7 +27,7 @@ macro_rules! trace_stream {
         if log::log_enabled!(target: $target, log::Level::Trace) {
             use futures::stream::StreamExt;
 
-            let objects = $expr.values.inspect(move |o| {
+            let objects = $expr.inspect(move |o| {
                 trace!(
                     target: $target,
                     "{} = {}",
@@ -49,7 +49,7 @@ macro_rules! trace_out_stream {
         if log::log_enabled!(target: $target, log::Level::Trace) {
             use futures::stream::StreamExt;
 
-            let objects = $expr.values.inspect(move |o| {
+            let objects = $expr.inspect(move |o| {
                 trace!(
                     target: $target,
                     "{} = {}",
@@ -71,30 +71,25 @@ macro_rules! trace_out_stream {
 pub(crate) use nu_protocol::{errln, out, outln};
 use nu_source::HasFallibleSpan;
 
-pub(crate) use crate::commands::command::{
-    CallInfoExt, CommandArgs, PerItemCommand, RawCommandArgs, RunnableContext,
-    RunnablePerItemContext,
-};
-pub(crate) use crate::context::CommandRegistry;
-pub(crate) use crate::context::Context;
-pub(crate) use crate::data::config;
-pub(crate) use crate::data::types::ExtractType;
-pub(crate) use crate::data::value;
-pub(crate) use crate::env::host::handle_unexpected;
+pub(crate) use crate::command_registry::CommandRegistry;
+pub(crate) use crate::commands::command::{CommandArgs, RawCommandArgs, RunnableContext};
+pub(crate) use crate::commands::Example;
+pub(crate) use crate::evaluation_context::EvaluationContext;
+pub(crate) use nu_data::config;
+pub(crate) use nu_data::value;
+// pub(crate) use crate::env::host::handle_unexpected;
 pub(crate) use crate::env::Host;
 pub(crate) use crate::shell::filesystem_shell::FilesystemShell;
 pub(crate) use crate::shell::help_shell::HelpShell;
 pub(crate) use crate::shell::shell_manager::ShellManager;
 pub(crate) use crate::shell::value_shell::ValueShell;
-pub(crate) use crate::stream::{InputStream, OutputStream};
-pub(crate) use async_stream::stream as async_stream;
+pub(crate) use crate::stream::{InputStream, InterruptibleStream, OutputStream};
 pub(crate) use bigdecimal::BigDecimal;
 pub(crate) use futures::stream::BoxStream;
-pub(crate) use futures::{FutureExt, Stream, StreamExt};
-pub(crate) use nu_protocol::{EvaluateTrait, MaybeOwned};
+pub(crate) use futures::{Stream, StreamExt};
 pub(crate) use nu_source::{
-    b, AnchorLocation, DebugDocBuilder, HasSpan, PrettyDebug, PrettyDebugWithSource, Span,
-    SpannedItem, Tag, TaggedItem, Text,
+    b, AnchorLocation, DebugDocBuilder, PrettyDebug, PrettyDebugWithSource, Span, SpannedItem, Tag,
+    TaggedItem, Text,
 };
 pub(crate) use nu_value_ext::ValueExt;
 pub(crate) use num_bigint::BigInt;
@@ -102,8 +97,11 @@ pub(crate) use num_traits::cast::ToPrimitive;
 pub(crate) use serde::Deserialize;
 pub(crate) use std::collections::VecDeque;
 pub(crate) use std::future::Future;
+pub(crate) use std::sync::atomic::AtomicBool;
 pub(crate) use std::sync::Arc;
 
+pub(crate) use async_trait::async_trait;
+pub(crate) use indexmap::IndexMap;
 pub(crate) use itertools::Itertools;
 
 pub trait FromInputStream {
@@ -131,17 +129,13 @@ where
     U: Into<Result<nu_protocol::Value, nu_errors::ShellError>>,
 {
     fn to_input_stream(self) -> InputStream {
-        InputStream {
-            values: self
-                .map(|item| match item.into() {
-                    Ok(result) => result,
-                    Err(err) => match HasFallibleSpan::maybe_span(&err) {
-                        Some(span) => nu_protocol::UntaggedValue::Error(err).into_value(span),
-                        None => nu_protocol::UntaggedValue::Error(err).into_untagged_value(),
-                    },
-                })
-                .boxed(),
-        }
+        InputStream::from_stream(self.map(|item| match item.into() {
+            Ok(result) => result,
+            Err(err) => match HasFallibleSpan::maybe_span(&err) {
+                Some(span) => nu_protocol::UntaggedValue::Error(err).into_value(span),
+                None => nu_protocol::UntaggedValue::Error(err).into_untagged_value(),
+            },
+        }))
     }
 }
 
@@ -158,5 +152,18 @@ where
         OutputStream {
             values: self.map(|item| item.into()).boxed(),
         }
+    }
+}
+
+pub trait Interruptible<V> {
+    fn interruptible(self, ctrl_c: Arc<AtomicBool>) -> InterruptibleStream<V>;
+}
+
+impl<S, V> Interruptible<V> for S
+where
+    S: Stream<Item = V> + Send + 'static,
+{
+    fn interruptible(self, ctrl_c: Arc<AtomicBool>) -> InterruptibleStream<V> {
+        InterruptibleStream::new(self, ctrl_c)
     }
 }

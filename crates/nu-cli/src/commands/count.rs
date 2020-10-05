@@ -1,46 +1,91 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use futures::stream::StreamExt;
 use nu_errors::ShellError;
-use nu_protocol::{ReturnSuccess, Signature, UntaggedValue, Value};
+use nu_protocol::{Signature, UntaggedValue, Value};
 
 pub struct Count;
 
 #[derive(Deserialize)]
-pub struct CountArgs {}
+pub struct CountArgs {
+    column: bool,
+}
 
+#[async_trait]
 impl WholeStreamCommand for Count {
     fn name(&self) -> &str {
         "count"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("count")
+        Signature::build("count").switch(
+            "column",
+            "Calculate number of columns in table",
+            Some('c'),
+        )
     }
 
     fn usage(&self) -> &str {
-        "Show the total number of rows."
+        "Show the total number of rows or items."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, count)?.run()
+        let tag = args.call_info.name_tag.clone();
+        let (CountArgs { column }, input) = args.process(&registry).await?;
+        let rows: Vec<Value> = input.collect().await;
+
+        let count = if column {
+            if rows.is_empty() {
+                0
+            } else {
+                match &rows[0].value {
+                    UntaggedValue::Row(dictionary) => dictionary.length(),
+                    _ => {
+                        return Err(ShellError::labeled_error(
+                            "Cannot obtain column count",
+                            "cannot obtain column count",
+                            tag,
+                        ));
+                    }
+                }
+            }
+        } else {
+            rows.len()
+        };
+
+        Ok(OutputStream::one(UntaggedValue::int(count).into_value(tag)))
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Count the number of entries in a list",
+                example: "echo [1 2 3 4 5] | count",
+                result: Some(vec![UntaggedValue::int(5).into()]),
+            },
+            Example {
+                description: "Count the number of columns in the calendar table",
+                example: "cal | count -c",
+                result: None,
+            },
+        ]
     }
 }
 
-pub fn count(
-    CountArgs {}: CountArgs,
-    RunnableContext { input, name, .. }: RunnableContext,
-) -> Result<OutputStream, ShellError> {
-    let stream = async_stream! {
-        let rows: Vec<Value> = input.values.collect().await;
+#[cfg(test)]
+mod tests {
+    use super::Count;
+    use super::ShellError;
 
-        yield ReturnSuccess::value(UntaggedValue::int(rows.len()).into_value(name))
-    };
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
 
-    Ok(stream.to_output_stream())
+        Ok(test_examples(Count {})?)
+    }
 }

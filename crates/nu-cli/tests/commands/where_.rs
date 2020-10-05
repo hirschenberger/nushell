@@ -1,15 +1,68 @@
-use nu_test_support::{nu, pipeline};
+use nu_test_support::nu;
+
+#[cfg(feature = "sqlite")]
+use nu_test_support::pipeline;
 
 #[test]
 fn filters_by_unit_size_comparison() {
     let actual = nu!(
         cwd: "tests/fixtures/formats",
-        "ls | where size > 1kb | sort-by size | get name | first 1 | trim | echo $it"
+        "ls | where size > 1kb | sort-by size | get name | first 1 | str trim | echo $it"
     );
 
-    assert_eq!(actual, "cargo_sample.toml");
+    assert_eq!(actual.out, "cargo_sample.toml");
 }
 
+#[test]
+fn filters_with_nothing_comparison() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats",
+        r#"echo '[{"foo": 3}, {"foo": null}, {"foo": 4}]' | from json | get foo | compact | where $it > 1 | math sum | echo $it"#
+    );
+
+    assert_eq!(actual.out, "7");
+}
+
+#[test]
+fn where_in_table() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats",
+        r#"echo '[{"name": "foo", "size": 3}, {"name": "foo", "size": 2}, {"name": "bar", "size": 4}]' | from json | where name in ["foo"] | get size | math sum | echo $it"#
+    );
+
+    assert_eq!(actual.out, "5");
+}
+
+#[test]
+fn where_not_in_table() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats",
+        r#"echo '[{"name": "foo", "size": 3}, {"name": "foo", "size": 2}, {"name": "bar", "size": 4}]' | from json | where name not-in ["foo"] | get size | math sum | echo $it"#
+    );
+
+    assert_eq!(actual.out, "4");
+}
+
+#[cfg(feature = "sqlite")]
+#[test]
+fn explicit_block_condition() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            open sample.db
+            | where table_name == ints
+            | get table_values
+            | first 4
+            | where {= $it.z > 4200}
+            | get z
+            | echo $it
+        "#
+    ));
+
+    assert_eq!(actual.out, "4253");
+}
+
+#[cfg(feature = "sqlite")]
 #[test]
 fn binary_operator_comparisons() {
     let actual = nu!(
@@ -25,7 +78,7 @@ fn binary_operator_comparisons() {
         "#
     ));
 
-    assert_eq!(actual, "4253");
+    assert_eq!(actual.out, "4253");
 
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
@@ -40,7 +93,7 @@ fn binary_operator_comparisons() {
         "#
     ));
 
-    assert_eq!(actual, "4253");
+    assert_eq!(actual.out, "4253");
 
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
@@ -55,7 +108,7 @@ fn binary_operator_comparisons() {
         "#
     ));
 
-    assert_eq!(actual, "1");
+    assert_eq!(actual.out, "1");
 
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
@@ -70,7 +123,7 @@ fn binary_operator_comparisons() {
         "#
     ));
 
-    assert_eq!(actual, "1");
+    assert_eq!(actual.out, "1");
 
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
@@ -85,9 +138,10 @@ fn binary_operator_comparisons() {
         "#
     ));
 
-    assert_eq!(actual, "42");
+    assert_eq!(actual.out, "42");
 }
 
+#[cfg(feature = "sqlite")]
 #[test]
 fn contains_operator() {
     let actual = nu!(
@@ -102,7 +156,7 @@ fn contains_operator() {
         "#
     ));
 
-    assert_eq!(actual, "4");
+    assert_eq!(actual.out, "4");
 
     let actual = nu!(
         cwd: "tests/fixtures/formats", pipeline(
@@ -116,5 +170,5 @@ fn contains_operator() {
         "#
     ));
 
-    assert_eq!(actual, "2");
+    assert_eq!(actual.out, "2");
 }

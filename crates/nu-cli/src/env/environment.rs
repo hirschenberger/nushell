@@ -1,7 +1,11 @@
-use crate::data::config::Conf;
+use crate::env::directory_specific_environment::*;
 use indexmap::{indexmap, IndexSet};
+use nu_data::config::Conf;
+use nu_errors::ShellError;
 use nu_protocol::{UntaggedValue, Value};
+use std::env::*;
 use std::ffi::OsString;
+
 use std::fmt::Debug;
 
 pub trait Env: Debug + Send {
@@ -34,6 +38,7 @@ impl Env for Box<dyn Env> {
 pub struct Environment {
     environment_vars: Option<Value>,
     path_vars: Option<Value>,
+    pub autoenv: DirectorySpecificEnvironment,
 }
 
 impl Environment {
@@ -41,17 +46,26 @@ impl Environment {
         Environment {
             environment_vars: None,
             path_vars: None,
+            autoenv: DirectorySpecificEnvironment::new(),
         }
     }
 
     pub fn from_config<T: Conf>(configuration: &T) -> Environment {
         let env = configuration.env();
         let path = configuration.path();
-
         Environment {
             environment_vars: env,
             path_vars: path,
+            autoenv: DirectorySpecificEnvironment::new(),
         }
+    }
+
+    pub fn autoenv(&mut self, reload_trusted: bool) -> Result<(), ShellError> {
+        self.autoenv.maintain_autoenv()?;
+        if reload_trusted {
+            self.autoenv.clear_recently_untrusted_file()?;
+        }
+        Ok(())
     }
 
     pub fn morph<T: Conf>(&mut self, configuration: &T) {
@@ -114,7 +128,7 @@ impl Env for Environment {
             {
                 let mut new_paths = current_paths.clone();
 
-                let new_path_candidates = std::env::split_paths(&paths).map(|path| {
+                let new_path_candidates = split_paths(&paths).map(|path| {
                     UntaggedValue::string(path.to_string_lossy()).into_value(tag.clone())
                 });
 
@@ -140,7 +154,7 @@ impl Env for Environment {
 #[cfg(test)]
 mod tests {
     use super::{Env, Environment};
-    use crate::data::config::{tests::FakeConfig, Conf};
+    use nu_data::config::{tests::FakeConfig, Conf};
     use nu_protocol::UntaggedValue;
     use nu_test_support::fs::Stub::FileWithContent;
     use nu_test_support::playground::Playground;
@@ -275,7 +289,7 @@ mod tests {
             assert_eq!(
                 actual.path(),
                 Some(
-                    UntaggedValue::table(&vec![
+                    UntaggedValue::table(&[
                         UntaggedValue::string("/Users/andresrobalino/.volta/bin")
                             .into_untagged_value(),
                         UntaggedValue::string("/users/mosqueteros/bin").into_untagged_value(),

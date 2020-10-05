@@ -233,9 +233,9 @@ impl Signature {
         desc: impl Into<String>,
         short: Option<char>,
     ) -> Signature {
-        let s = short.and_then(|c| {
+        let s = short.map(|c| {
             debug_assert!(!self.get_shorts().contains(&c));
-            Some(c)
+            c
         });
         self.named.insert(
             name.into(),
@@ -253,9 +253,9 @@ impl Signature {
         desc: impl Into<String>,
         short: Option<char>,
     ) -> Signature {
-        let s = short.and_then(|c| {
+        let s = short.map(|c| {
             debug_assert!(!self.get_shorts().contains(&c));
-            Some(c)
+            c
         });
 
         self.named.insert(
@@ -273,9 +273,12 @@ impl Signature {
         desc: impl Into<String>,
         short: Option<char>,
     ) -> Signature {
-        let s = short.and_then(|c| {
-            debug_assert!(!self.get_shorts().contains(&c));
-            Some(c)
+        let s = short.map(|c| {
+            debug_assert!(
+                !self.get_shorts().contains(&c),
+                "There may be duplicate short flags, such as -h"
+            );
+            c
         });
 
         self.named
@@ -290,6 +293,8 @@ impl Signature {
     }
 
     /// Set the type for the "rest" of the positional arguments
+    /// Note: Not naming the field in your struct holding the rest values "rest", can
+    /// cause errors when deserializing
     pub fn rest(mut self, ty: SyntaxShape, desc: impl Into<String>) -> Signature {
         self.rest_positional = Some((ty, desc.into()));
         self

@@ -1,17 +1,18 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{Signature, SyntaxShape, Value};
+use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
 
 #[derive(Deserialize)]
-struct AppendArgs {
+struct Arguments {
     row: Value,
 }
 
-pub struct Append;
+pub struct Command;
 
-impl WholeStreamCommand for Append {
+#[async_trait]
+impl WholeStreamCommand for Command {
     fn name(&self) -> &str {
         "append"
     }
@@ -28,22 +29,35 @@ impl WholeStreamCommand for Append {
         "Append the given row to the table"
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, append)?.run()
+        let (Arguments { mut row }, input) = args.process(registry).await?;
+
+        let input: Vec<Value> = input.collect().await;
+
+        if let Some(first) = input.get(0) {
+            row.tag = first.tag();
+        }
+
+        Ok(
+            futures::stream::iter(input.into_iter().chain(vec![row]).map(ReturnSuccess::value))
+                .to_output_stream(),
+        )
     }
-}
 
-fn append(
-    AppendArgs { row }: AppendArgs,
-    RunnableContext { input, .. }: RunnableContext,
-) -> Result<OutputStream, ShellError> {
-    let mut after: VecDeque<Value> = VecDeque::new();
-    after.push_back(row);
-    let after = futures::stream::iter(after);
-
-    Ok(OutputStream::from_input(input.values.chain(after)))
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Add something to the end of a list or table",
+            example: "echo [1 2 3] | append 4",
+            result: Some(vec![
+                UntaggedValue::int(1).into(),
+                UntaggedValue::int(2).into(),
+                UntaggedValue::int(3).into(),
+                UntaggedValue::int(4).into(),
+            ]),
+        }]
+    }
 }

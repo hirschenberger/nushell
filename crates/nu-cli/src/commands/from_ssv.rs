@@ -17,9 +17,10 @@ pub struct FromSSVArgs {
     minimum_spaces: Option<Tagged<usize>>,
 }
 
-const STRING_REPRESENTATION: &str = "from-ssv";
+const STRING_REPRESENTATION: &str = "from ssv";
 const DEFAULT_MINIMUM_SPACES: usize = 2;
 
+#[async_trait]
 impl WholeStreamCommand for FromSSV {
     fn name(&self) -> &str {
         STRING_REPRESENTATION
@@ -45,12 +46,12 @@ impl WholeStreamCommand for FromSSV {
         "Parse text as space-separated values and create a table. The default minimum number of spaces counted as a separator is 2."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, from_ssv)?.run()
+        from_ssv(args, registry).await
     }
 }
 
@@ -250,46 +251,60 @@ fn from_ssv_string_to_value(
     Some(UntaggedValue::Table(rows).into_value(&tag))
 }
 
-fn from_ssv(
-    FromSSVArgs {
-        headerless,
-        aligned_columns,
-        minimum_spaces,
-    }: FromSSVArgs,
-    RunnableContext { input, name, .. }: RunnableContext,
+async fn from_ssv(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let stream = async_stream! {
-        let concat_string = input.collect_string(name.clone()).await?;
-        let split_at = match minimum_spaces {
-            Some(number) => number.item,
-            None => DEFAULT_MINIMUM_SPACES
-        };
+    let name = args.call_info.name_tag.clone();
+    let registry = registry.clone();
+    let (
+        FromSSVArgs {
+            headerless,
+            aligned_columns,
+            minimum_spaces,
+        },
+        input,
+    ) = args.process(&registry).await?;
+    let concat_string = input.collect_string(name.clone()).await?;
+    let split_at = match minimum_spaces {
+        Some(number) => number.item,
+        None => DEFAULT_MINIMUM_SPACES,
+    };
 
-        match from_ssv_string_to_value(&concat_string.item, headerless, aligned_columns, split_at, name.clone()) {
+    Ok(
+        match from_ssv_string_to_value(
+            &concat_string.item,
+            headerless,
+            aligned_columns,
+            split_at,
+            name.clone(),
+        ) {
             Some(x) => match x {
-                Value { value: UntaggedValue::Table(list), ..} => {
-                    for l in list { yield ReturnSuccess::value(l) }
-                }
-                x => yield ReturnSuccess::value(x)
+                Value {
+                    value: UntaggedValue::Table(list),
+                    ..
+                } => futures::stream::iter(list.into_iter().map(ReturnSuccess::value))
+                    .to_output_stream(),
+                x => OutputStream::one(ReturnSuccess::value(x)),
             },
             None => {
-                yield Err(ShellError::labeled_error_with_secondary(
+                return Err(ShellError::labeled_error_with_secondary(
                     "Could not parse as SSV",
                     "input cannot be parsed ssv",
                     &name,
                     "value originates from here",
                     &concat_string.tag,
-                ))
-            },
-        }
-    };
-
-    Ok(stream.to_output_stream())
+                ));
+            }
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::ShellError;
     use super::*;
+
     fn owned(x: &str, y: &str) -> (String, String) {
         (String::from(x), String::from(y))
     }
@@ -488,5 +503,13 @@ mod tests {
         let separator_with_headers = string_to_table(input, false, false, 2);
         assert_eq!(aligned_columns_headerless, separator_headerless);
         assert_eq!(aligned_columns_with_headers, separator_with_headers);
+    }
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use super::FromSSV;
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromSSV {})?)
     }
 }

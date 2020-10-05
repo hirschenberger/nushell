@@ -3,11 +3,12 @@
 This command sets a default row's column if missing. Other commands are capable of feeding `default` with their output through pipelines.
 
 ## Usage
+
 ```shell
 > [input-command] | default [column-name] [column-value]
 ```
 
-## Examples 
+## Examples
 
 Let's say we have a table like this:
 

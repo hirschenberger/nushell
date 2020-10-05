@@ -5,35 +5,37 @@ use nu_protocol::{Primitive, ReturnSuccess, Signature, TaggedDictBuilder, Untagg
 
 pub struct FromTOML;
 
+#[async_trait]
 impl WholeStreamCommand for FromTOML {
     fn name(&self) -> &str {
-        "from-toml"
+        "from toml"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("from-toml")
+        Signature::build("from toml")
     }
 
     fn usage(&self) -> &str {
         "Parse text as .toml and create table."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        from_toml(args, registry)
+        from_toml(args, registry).await
     }
 }
 
 pub fn convert_toml_value_to_nu_value(v: &toml::Value, tag: impl Into<Tag>) -> Value {
     let tag = tag.into();
+    let span = tag.span;
 
     match v {
         toml::Value::Boolean(b) => UntaggedValue::boolean(*b).into_value(tag),
         toml::Value::Integer(n) => UntaggedValue::int(*n).into_value(tag),
-        toml::Value::Float(n) => UntaggedValue::decimal(*n).into_value(tag),
+        toml::Value::Float(n) => UntaggedValue::decimal_from_float(*n, span).into_value(tag),
         toml::Value::String(s) => {
             UntaggedValue::Primitive(Primitive::String(String::from(s))).into_value(tag)
         }
@@ -63,27 +65,28 @@ pub fn from_toml_string_to_value(s: String, tag: impl Into<Tag>) -> Result<Value
     Ok(convert_toml_value_to_nu_value(&v, tag))
 }
 
-pub fn from_toml(
+pub async fn from_toml(
     args: CommandArgs,
     registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let args = args.evaluate_once(registry)?;
+    let registry = registry.clone();
+    let args = args.evaluate_once(&registry).await?;
     let tag = args.name_tag();
     let input = args.input;
 
-    let stream = async_stream! {
-        let concat_string = input.collect_string(tag.clone()).await?;
+    let concat_string = input.collect_string(tag.clone()).await?;
+    Ok(
         match from_toml_string_to_value(concat_string.item, tag.clone()) {
             Ok(x) => match x {
-                Value { value: UntaggedValue::Table(list), .. } => {
-                    for l in list {
-                        yield ReturnSuccess::value(l);
-                    }
-                }
-                x => yield ReturnSuccess::value(x),
+                Value {
+                    value: UntaggedValue::Table(list),
+                    ..
+                } => futures::stream::iter(list.into_iter().map(ReturnSuccess::value))
+                    .to_output_stream(),
+                x => OutputStream::one(ReturnSuccess::value(x)),
             },
             Err(_) => {
-                yield Err(ShellError::labeled_error_with_secondary(
+                return Err(ShellError::labeled_error_with_secondary(
                     "Could not parse as TOML",
                     "input cannot be parsed as TOML",
                     &tag,
@@ -91,8 +94,19 @@ pub fn from_toml(
                     concat_string.tag,
                 ))
             }
-        }
-    };
+        },
+    )
+}
 
-    Ok(stream.to_output_stream())
+#[cfg(test)]
+mod tests {
+    use super::FromTOML;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromTOML {})?)
+    }
 }

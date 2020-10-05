@@ -6,10 +6,10 @@ use nu_test_support::{nu, pipeline};
 fn gets_the_last_row() {
     let actual = nu!(
         cwd: "tests/fixtures/formats",
-        "ls | sort-by name | last 1 | get name | trim | echo $it"
+        "ls | sort-by name | last 1 | get name | str trim | echo $it"
     );
 
-    assert_eq!(actual, "utf16.ini");
+    assert_eq!(actual.out, "utf16.ini");
 }
 
 #[test]
@@ -32,7 +32,7 @@ fn gets_last_rows_by_amount() {
             "#
         ));
 
-        assert_eq!(actual, "3");
+        assert_eq!(actual.out, "3");
     })
 }
 
@@ -51,6 +51,18 @@ fn gets_last_row_when_no_amount_given() {
             "#
         ));
 
-        assert_eq!(actual, "1");
+        assert_eq!(actual.out, "1");
     })
+}
+
+#[test]
+fn requests_more_rows_than_table_has() {
+    let actual = nu!(
+        cwd: ".", pipeline(
+        r#"
+        date | last 50 | count
+        "#
+    ));
+
+    assert_eq!(actual.out, "1");
 }

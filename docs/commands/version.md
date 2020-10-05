@@ -2,13 +2,11 @@
 
 Outputs the nushell version.
 
-## Examples 
+## Examples
 
 ```shell
 > version
-━━━━━━━━━
- version 
-─────────
- 0.6.0 
-━━━━━━━━━
+─────────┬────────
+ version │ 0.15.1
+─────────┴────────
 ```

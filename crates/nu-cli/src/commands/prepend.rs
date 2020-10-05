@@ -1,8 +1,8 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape, UntaggedValue, Value};
 
 #[derive(Deserialize)]
 struct PrependArgs {
@@ -11,6 +11,7 @@ struct PrependArgs {
 
 pub struct Prepend;
 
+#[async_trait]
 impl WholeStreamCommand for Prepend {
     fn name(&self) -> &str {
         "prepend"
@@ -28,20 +29,50 @@ impl WholeStreamCommand for Prepend {
         "Prepend the given row to the front of the table"
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, prepend)?.run()
+        prepend(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Add something to the beginning of a list or table",
+            example: "echo [2 3 4] | prepend 1",
+            result: Some(vec![
+                UntaggedValue::int(1).into(),
+                UntaggedValue::int(2).into(),
+                UntaggedValue::int(3).into(),
+                UntaggedValue::int(4).into(),
+            ]),
+        }]
     }
 }
 
-fn prepend(
-    PrependArgs { row }: PrependArgs,
-    RunnableContext { input, .. }: RunnableContext,
+async fn prepend(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let prepend = futures::stream::iter(vec![row]);
+    let registry = registry.clone();
 
-    Ok(OutputStream::from_input(prepend.chain(input.values)))
+    let (PrependArgs { row }, input) = args.process(&registry).await?;
+
+    let bos = futures::stream::iter(vec![row]);
+
+    Ok(bos.chain(input).to_output_stream())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Prepend;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Prepend {})?)
+    }
 }

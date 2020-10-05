@@ -1,7 +1,8 @@
 use log::trace;
 use nu_errors::{CoerceInto, ShellError};
 use nu_protocol::{
-    CallInfo, ColumnPath, Evaluate, Primitive, RangeInclusion, ShellTypeName, UntaggedValue, Value,
+    hir::Block, CallInfo, ColumnPath, Primitive, RangeInclusion, ShellTypeName, UntaggedValue,
+    Value,
 };
 use nu_source::{HasSpan, Spanned, SpannedItem, Tagged, TaggedItem};
 use nu_value_ext::ValueExt;
@@ -11,8 +12,31 @@ use std::path::PathBuf;
 
 #[derive(Copy, Clone, Deserialize, Serialize)]
 pub struct NumericRange {
-    pub from: (Spanned<u64>, RangeInclusion),
-    pub to: (Spanned<u64>, RangeInclusion),
+    pub from: (Option<Spanned<u64>>, RangeInclusion),
+    pub to: (Option<Spanned<u64>>, RangeInclusion),
+}
+
+impl NumericRange {
+    pub fn min(self) -> u64 {
+        match self.from.1 {
+            RangeInclusion::Inclusive => self.from.0.map(|from| *from).unwrap_or(0),
+            RangeInclusion::Exclusive => {
+                self.from.0.map(|from| *from).unwrap_or(0).saturating_add(1)
+            }
+        }
+    }
+
+    pub fn max(self) -> u64 {
+        match self.to.1 {
+            RangeInclusion::Inclusive => self.to.0.map(|to| *to).unwrap_or(u64::MAX),
+            RangeInclusion::Exclusive => self
+                .to
+                .0
+                .map(|to| *to)
+                .unwrap_or(u64::MAX)
+                .saturating_sub(1),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -355,7 +379,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut ConfigDeserializer<'de> {
             return visit::<Value, _>(value.val, name, fields, visitor);
         }
 
-        if name == "Evaluate" {
+        if name == "Block" {
             let block = match value.val {
                 Value {
                     value: UntaggedValue::Block(block),
@@ -368,7 +392,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut ConfigDeserializer<'de> {
                     ))
                 }
             };
-            return visit::<Evaluate, _>(block, name, fields, visitor);
+            return visit::<Block, _>(block, name, fields, visitor);
         }
 
         if name == "ColumnPath" {
@@ -412,6 +436,24 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut ConfigDeserializer<'de> {
                 visit::<Tagged<i64>, _>(i.tagged(tag), name, fields, visitor)
             }
             Value {
+                value: UntaggedValue::Primitive(Primitive::Duration(big_int)),
+                ..
+            } => {
+                let u_int: u64 = big_int
+                    .tagged(value.val.tag)
+                    .coerce_into("converting to u64")?;
+                visit::<Tagged<u64>, _>(u_int.tagged(tag), name, fields, visitor)
+            }
+            Value {
+                value: UntaggedValue::Primitive(Primitive::Decimal(decimal)),
+                ..
+            } => {
+                let i: f64 = decimal
+                    .tagged(value.val.tag)
+                    .coerce_into("converting to f64")?;
+                visit::<Tagged<f64>, _>(i.tagged(tag), name, fields, visitor)
+            }
+            Value {
                 value: UntaggedValue::Primitive(Primitive::String(string)),
                 ..
             } => visit::<Tagged<String>, _>(string.tagged(tag), name, fields, visitor),
@@ -424,12 +466,21 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut ConfigDeserializer<'de> {
                 let left_span = left.span;
                 let right_span = right.span;
 
-                let left = left.as_u64(left_span)?;
-                let right = right.as_u64(right_span)?;
+                let left = match left.item {
+                    Primitive::Nothing => None,
+                    _ => Some(left.as_u64(left_span)?),
+                };
+                let right = match right.item {
+                    Primitive::Nothing => None,
+                    _ => Some(right.as_u64(right_span)?),
+                };
 
                 let numeric_range = NumericRange {
-                    from: (left.spanned(left_span), left_inclusion),
-                    to: (right.spanned(right_span), right_inclusion),
+                    from: (left.map(|left| left.spanned(left_span)), left_inclusion),
+                    to: (
+                        right.map(|right| right.spanned(right_span)),
+                        right_inclusion,
+                    ),
                 };
 
                 visit::<Tagged<NumericRange>, _>(numeric_range.tagged(tag), name, fields, visitor)

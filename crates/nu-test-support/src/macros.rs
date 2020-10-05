@@ -38,7 +38,7 @@ macro_rules! nu {
         });
 
         let mut paths = $crate::shell_os_paths();
-        paths.push(test_bins);
+        paths.insert(0, test_bins);
 
         let paths_joined = match std::env::join_paths(paths.iter()) {
             Ok(all) => all,
@@ -47,8 +47,10 @@ macro_rules! nu {
 
         let mut process = match Command::new($crate::fs::executable_path())
             .env("PATH", paths_joined)
-            .stdin(Stdio::piped())
+            .arg("--skip-plugins")
             .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
         {
             Ok(child) => child,
@@ -62,26 +64,19 @@ macro_rules! nu {
 
         let output = process
             .wait_with_output()
-            .expect("couldn't read from stdout");
+            .expect("couldn't read from stdout/stderr");
 
         let out = $crate::macros::read_std(&output.stdout);
-        let err = $crate::macros::read_std(&output.stderr);
+        let err = String::from_utf8_lossy(&output.stderr);
 
-        println!("=== stderr\n{}", err);
+            println!("=== stderr\n{}", err);
 
-        out
+        $crate::macros::Outcome::new(out,err.into_owned())
     }};
 }
 
-pub fn read_std(std: &[u8]) -> String {
-    let out = String::from_utf8_lossy(std);
-    let out = out.lines().skip(1).collect::<Vec<_>>().join("\n");
-    let out = out.replace("\r\n", "");
-    out.replace("\n", "")
-}
-
 #[macro_export]
-macro_rules! nu_error {
+macro_rules! nu_with_plugins {
     (cwd: $cwd:expr, $path:expr, $($part:expr),*) => {{
         use $crate::fs::DisplayPath;
 
@@ -89,11 +84,11 @@ macro_rules! nu_error {
             $part.display_path()
         ),*);
 
-        nu_error!($cwd, &path)
+        nu_with_plugins!($cwd, &path)
     }};
 
     (cwd: $cwd:expr, $path:expr) => {{
-        nu_error!($cwd, $path)
+        nu_with_plugins!($cwd, $path)
     }};
 
     ($cwd:expr, $path:expr) => {{
@@ -120,20 +115,23 @@ macro_rules! nu_error {
         });
 
         let mut paths = $crate::shell_os_paths();
-        paths.push(test_bins);
+        paths.insert(0, test_bins);
 
         let paths_joined = match std::env::join_paths(paths.iter()) {
             Ok(all) => all,
             Err(_) => panic!("Couldn't join paths for PATH var."),
         };
 
-        let mut process = Command::new($crate::fs::executable_path())
+        let mut process = match Command::new($crate::fs::executable_path())
             .env("PATH", paths_joined)
             .stdout(Stdio::piped())
             .stdin(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("couldn't run test");
+        {
+            Ok(child) => child,
+            Err(why) => panic!("Can't run test {}", why.to_string()),
+        };
 
         let stdin = process.stdin.as_mut().expect("couldn't open stdin");
         stdin
@@ -144,7 +142,29 @@ macro_rules! nu_error {
             .wait_with_output()
             .expect("couldn't read from stdout/stderr");
 
-        let out = String::from_utf8_lossy(&output.stderr);
-        out.into_owned()
+        let out = $crate::macros::read_std(&output.stdout);
+        let err = String::from_utf8_lossy(&output.stderr);
+
+            println!("=== stderr\n{}", err);
+
+        $crate::macros::Outcome::new(out,err.into_owned())
     }};
+}
+
+pub struct Outcome {
+    pub out: String,
+    pub err: String,
+}
+
+impl Outcome {
+    pub fn new(out: String, err: String) -> Outcome {
+        Outcome { out, err }
+    }
+}
+
+pub fn read_std(std: &[u8]) -> String {
+    let out = String::from_utf8_lossy(std);
+    let out = out.lines().skip(1).collect::<Vec<_>>().join("\n");
+    let out = out.replace("\r\n", "");
+    out.replace("\n", "")
 }

@@ -1,6 +1,6 @@
 use nu_test_support::fs::{files_exist_at, AbsoluteFile, Stub::EmptyFile};
+use nu_test_support::nu;
 use nu_test_support::playground::Playground;
-use nu_test_support::{nu, nu_error};
 use std::path::Path;
 
 #[test]
@@ -8,7 +8,7 @@ fn copies_a_file() {
     Playground::setup("cp_test_1", |dirs, _| {
         nu!(
             cwd: dirs.root(),
-            "cp {} cp_test_1/sample.ini",
+            "cp \"{}\" cp_test_1/sample.ini",
             dirs.formats().join("sample.ini")
         );
 
@@ -34,13 +34,13 @@ fn copies_the_file_inside_directory_if_path_to_copy_is_directory() {
 #[test]
 fn error_if_attempting_to_copy_a_directory_to_another_directory() {
     Playground::setup("cp_test_3", |dirs, _| {
-        let actual = nu_error!(
+        let actual = nu!(
             cwd: dirs.formats(),
             "cp ../formats {}", dirs.test()
         );
 
-        assert!(actual.contains("../formats"));
-        assert!(actual.contains("is a directory (not copied)"));
+        assert!(actual.err.contains("../formats"));
+        assert!(actual.err.contains("resolves to a directory (not copied)"));
     });
 }
 
@@ -183,4 +183,55 @@ fn copies_same_file_twice() {
 
         assert!(dirs.test().join("sample.ini").exists());
     });
+}
+
+#[test]
+fn copy_files_using_glob_two_parents_up_using_multiple_dots() {
+    Playground::setup("cp_test_9", |dirs, sandbox| {
+        sandbox.within("foo").within("bar").with_files(vec![
+            EmptyFile("jonathan.json"),
+            EmptyFile("andres.xml"),
+            EmptyFile("yehuda.yaml"),
+            EmptyFile("kevin.txt"),
+            EmptyFile("many_more.ppl"),
+        ]);
+
+        nu!(
+            cwd: dirs.test().join("foo/bar"),
+            r#"
+                cp * ...
+            "#
+        );
+
+        assert!(files_exist_at(
+            vec![
+                "yehuda.yaml",
+                "jonathan.json",
+                "andres.xml",
+                "kevin.txt",
+                "many_more.ppl",
+            ],
+            dirs.test()
+        ));
+    })
+}
+
+#[test]
+fn copy_file_and_dir_from_two_parents_up_using_multiple_dots_to_current_dir_recursive() {
+    Playground::setup("cp_test_10", |dirs, sandbox| {
+        sandbox.with_files(vec![EmptyFile("hello_there")]);
+        sandbox.mkdir("hello_again");
+        sandbox.within("foo").mkdir("bar");
+
+        nu!(
+            cwd: dirs.test().join("foo/bar"),
+            r#"
+                cp -r .../hello* .
+            "#
+        );
+
+        let expected = dirs.test().join("foo/bar");
+
+        assert!(files_exist_at(vec!["hello_there", "hello_again"], expected));
+    })
 }

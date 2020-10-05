@@ -1,8 +1,8 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{Signature, SyntaxShape};
+use nu_protocol::{Signature, SyntaxShape, UntaggedValue};
 use nu_source::Tagged;
 
 pub struct First;
@@ -12,6 +12,7 @@ pub struct FirstArgs {
     rows: Option<Tagged<usize>>,
 }
 
+#[async_trait]
 impl WholeStreamCommand for First {
     fn name(&self) -> &str {
         "first"
@@ -29,26 +30,54 @@ impl WholeStreamCommand for First {
         "Show only the first number of rows."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, first)?.run()
+        first(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Return the first item of a list/table",
+                example: "echo [1 2 3] | first",
+                result: Some(vec![UntaggedValue::int(1).into()]),
+            },
+            Example {
+                description: "Return the first 2 items of a list/table",
+                example: "echo [1 2 3] | first 2",
+                result: Some(vec![
+                    UntaggedValue::int(1).into(),
+                    UntaggedValue::int(2).into(),
+                ]),
+            },
+        ]
     }
 }
 
-fn first(
-    FirstArgs { rows }: FirstArgs,
-    context: RunnableContext,
-) -> Result<OutputStream, ShellError> {
+async fn first(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let (FirstArgs { rows }, input) = args.process(&registry).await?;
     let rows_desired = if let Some(quantity) = rows {
         *quantity
     } else {
         1
     };
 
-    Ok(OutputStream::from_input(
-        context.input.values.take(rows_desired),
-    ))
+    Ok(input.take(rows_desired).to_output_stream())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::First;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(First {})?)
+    }
 }

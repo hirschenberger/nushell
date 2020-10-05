@@ -1,30 +1,31 @@
 use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{Primitive, ReturnSuccess, Signature, TaggedDictBuilder, UntaggedValue, Value};
+use nu_protocol::{Primitive, Signature, TaggedDictBuilder, UntaggedValue, Value};
 use std::collections::HashMap;
 
 pub struct FromINI;
 
+#[async_trait]
 impl WholeStreamCommand for FromINI {
     fn name(&self) -> &str {
-        "from-ini"
+        "from ini"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("from-ini")
+        Signature::build("from ini")
     }
 
     fn usage(&self) -> &str {
         "Parse text as .ini and create table"
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        from_ini(args, registry)
+        from_ini(args, registry).await
     }
 }
 
@@ -63,34 +64,43 @@ pub fn from_ini_string_to_value(
     Ok(convert_ini_top_to_nu_value(&v, tag))
 }
 
-fn from_ini(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
-    let args = args.evaluate_once(registry)?;
+async fn from_ini(
+    args: CommandArgs,
+    registry: &CommandRegistry,
+) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let args = args.evaluate_once(&registry).await?;
     let tag = args.name_tag();
     let input = args.input;
+    let concat_string = input.collect_string(tag.clone()).await?;
 
-    let stream = async_stream! {
-        let concat_string = input.collect_string(tag.clone()).await?;
+    match from_ini_string_to_value(concat_string.item, tag.clone()) {
+        Ok(x) => match x {
+            Value {
+                value: UntaggedValue::Table(list),
+                ..
+            } => Ok(futures::stream::iter(list).to_output_stream()),
+            x => Ok(OutputStream::one(x)),
+        },
+        Err(_) => Err(ShellError::labeled_error_with_secondary(
+            "Could not parse as INI",
+            "input cannot be parsed as INI",
+            &tag,
+            "value originates from here",
+            concat_string.tag,
+        )),
+    }
+}
 
-        match from_ini_string_to_value(concat_string.item, tag.clone()) {
-            Ok(x) => match x {
-                Value { value: UntaggedValue::Table(list), .. } => {
-                    for l in list {
-                        yield ReturnSuccess::value(l);
-                    }
-                }
-                x => yield ReturnSuccess::value(x),
-            },
-            Err(_) => {
-                yield Err(ShellError::labeled_error_with_secondary(
-                    "Could not parse as INI",
-                    "input cannot be parsed as INI",
-                    &tag,
-                    "value originates from here",
-                    concat_string.tag,
-                ))
-            }
-        }
-    };
+#[cfg(test)]
+mod tests {
+    use super::FromINI;
+    use super::ShellError;
 
-    Ok(stream.to_output_stream())
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromINI {})?)
+    }
 }

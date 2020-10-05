@@ -4,7 +4,7 @@ use crate::value::{UntaggedValue, Value};
 use derive_new::new;
 use getset::Getters;
 use indexmap::IndexMap;
-use nu_source::{b, DebugDocBuilder, PrettyDebug, Spanned, Tag};
+use nu_source::{b, DebugDocBuilder, PrettyDebug, Spanned, SpannedItem, Tag};
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ord, Ordering, PartialOrd};
 use std::hash::{Hash, Hasher};
@@ -64,10 +64,7 @@ impl Ord for Dictionary {
 impl PartialEq<Value> for Dictionary {
     /// Test a dictionary against a Value for equality
     fn eq(&self, other: &Value) -> bool {
-        match &other.value {
-            UntaggedValue::Row(d) => self == d,
-            _ => false,
-        }
+        matches!(&other.value, UntaggedValue::Row(d) if self == d)
     }
 }
 
@@ -125,6 +122,25 @@ impl Dictionary {
         }
     }
 
+    pub fn merge_from(&self, other: &Dictionary) -> Dictionary {
+        let mut obj = self.clone();
+
+        for column in other.keys() {
+            let key = column.clone();
+            let value_key = key.as_str();
+            let value_spanned_key = value_key.spanned_unknown();
+
+            let other_column = match other.get_data_by_key(value_spanned_key) {
+                Some(value) => value,
+                None => UntaggedValue::Primitive(Primitive::Nothing).into_untagged_value(),
+            };
+
+            obj.entries.insert(key, other_column);
+        }
+
+        obj
+    }
+
     /// Iterate the keys in the Dictionary
     pub fn keys(&self) -> impl Iterator<Item = &String> {
         self.entries.keys()
@@ -171,6 +187,11 @@ impl Dictionary {
     /// Insert a new key/value pair into the dictionary
     pub fn insert_data_at_key(&mut self, name: &str, value: Value) {
         self.entries.insert(name.to_string(), value);
+    }
+
+    /// Return size of dictionary
+    pub fn length(&self) -> usize {
+        self.entries.len()
     }
 }
 

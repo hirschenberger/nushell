@@ -1,10 +1,20 @@
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
+use nu_protocol::hir::Operator;
+use nu_protocol::{
+    Primitive, Range, RangeInclusion, ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value,
+};
 
 pub struct Echo;
 
-impl PerItemCommand for Echo {
+#[derive(Deserialize)]
+pub struct EchoArgs {
+    pub rest: Vec<Value>,
+}
+
+#[async_trait]
+impl WholeStreamCommand for Echo {
     fn name(&self) -> &str {
         "echo"
     }
@@ -17,51 +27,147 @@ impl PerItemCommand for Echo {
         "Echo the arguments back to the user."
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
+        args: CommandArgs,
         registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
     ) -> Result<OutputStream, ShellError> {
-        run(call_info, registry, raw_args)
+        echo(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Put a hello message in the pipeline",
+                example: "echo 'hello'",
+                result: Some(vec![Value::from("hello")]),
+            },
+            Example {
+                description: "Print the value of the special '$nu' variable",
+                example: "echo $nu",
+                result: None,
+            },
+        ]
     }
 }
 
-fn run(
-    call_info: &CallInfo,
-    _registry: &CommandRegistry,
-    _raw_args: &RawCommandArgs,
-) -> Result<OutputStream, ShellError> {
-    let mut output = vec![];
+async fn echo(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let (args, _): (EchoArgs, _) = args.process(&registry).await?;
 
-    if let Some(ref positional) = call_info.args.positional {
-        for i in positional {
-            match i.as_string() {
-                Ok(s) => {
-                    output.push(Ok(ReturnSuccess::Value(
-                        UntaggedValue::string(s).into_value(i.tag.clone()),
-                    )));
-                }
-                _ => match i {
-                    Value {
-                        value: UntaggedValue::Table(table),
-                        ..
-                    } => {
-                        for value in table {
-                            output.push(Ok(ReturnSuccess::Value(value.clone())));
-                        }
-                    }
-                    _ => {
-                        output.push(Ok(ReturnSuccess::Value(i.clone())));
-                    }
-                },
-            }
+    let stream = args.rest.into_iter().map(|i| match i.as_string() {
+        Ok(s) => OutputStream::one(Ok(ReturnSuccess::Value(
+            UntaggedValue::string(s).into_value(i.tag.clone()),
+        ))),
+        _ => match i {
+            Value {
+                value: UntaggedValue::Table(table),
+                ..
+            } => futures::stream::iter(table.into_iter().map(ReturnSuccess::value))
+                .to_output_stream(),
+            Value {
+                value: UntaggedValue::Primitive(Primitive::Range(range)),
+                tag,
+            } => futures::stream::iter(RangeIterator::new(*range, tag)).to_output_stream(),
+            _ => OutputStream::one(Ok(ReturnSuccess::Value(i.clone()))),
+        },
+    });
+
+    Ok(futures::stream::iter(stream).flatten().to_output_stream())
+}
+
+struct RangeIterator {
+    curr: Primitive,
+    end: Primitive,
+    tag: Tag,
+    is_end_inclusive: bool,
+}
+
+impl RangeIterator {
+    pub fn new(range: Range, tag: Tag) -> RangeIterator {
+        let start = match range.from.0.item {
+            Primitive::Nothing => Primitive::Int(0.into()),
+            x => x,
+        };
+
+        RangeIterator {
+            curr: start,
+            end: range.to.0.item,
+            tag,
+            is_end_inclusive: matches!(range.to.1, RangeInclusion::Inclusive),
         }
     }
+}
 
-    // TODO: This whole block can probably be replaced with `.map()`
-    let stream = futures::stream::iter(output);
+impl Iterator for RangeIterator {
+    type Item = Result<ReturnSuccess, ShellError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let ordering = if self.end == Primitive::Nothing {
+            Ordering::Less
+        } else {
+            let result =
+                nu_data::base::coerce_compare_primitive(&self.curr, &self.end).map_err(|_| {
+                    ShellError::labeled_error(
+                        "Cannot create range",
+                        "unsupported range",
+                        self.tag.span,
+                    )
+                });
 
-    Ok(stream.to_output_stream())
+            if let Err(result) = result {
+                return Some(Err(result));
+            }
+
+            let result = result
+                .expect("Internal error: the error case was already protected, but that failed");
+
+            result.compare()
+        };
+
+        use std::cmp::Ordering;
+
+        if (ordering == Ordering::Less) || (self.is_end_inclusive && ordering == Ordering::Equal) {
+            let output = UntaggedValue::Primitive(self.curr.clone()).into_value(self.tag.clone());
+
+            let next_value = nu_data::value::compute_values(
+                Operator::Plus,
+                &UntaggedValue::Primitive(self.curr.clone()),
+                &UntaggedValue::int(1),
+            );
+
+            self.curr = match next_value {
+                Ok(result) => match result {
+                    UntaggedValue::Primitive(p) => p,
+                    _ => {
+                        return Some(Err(ShellError::unimplemented(
+                            "Internal error: expected a primitive result from increment",
+                        )));
+                    }
+                },
+                Err((left_type, right_type)) => {
+                    return Some(Err(ShellError::coerce_error(
+                        left_type.spanned(self.tag.span),
+                        right_type.spanned(self.tag.span),
+                    )));
+                }
+            };
+            Some(ReturnSuccess::value(output))
+        } else {
+            // TODO: add inclusive/exclusive ranges
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Echo;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Echo {})?)
+    }
 }

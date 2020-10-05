@@ -5,25 +5,26 @@ use nu_protocol::{Primitive, ReturnSuccess, Signature, TaggedDictBuilder, Untagg
 
 pub struct FromXML;
 
+#[async_trait]
 impl WholeStreamCommand for FromXML {
     fn name(&self) -> &str {
-        "from-xml"
+        "from xml"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("from-xml")
+        Signature::build("from xml")
     }
 
     fn usage(&self) -> &str {
         "Parse text as .xml and create table."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        from_xml(args, registry)
+        from_xml(args, registry).await
     }
 }
 
@@ -98,41 +99,43 @@ pub fn from_xml_string_to_value(s: String, tag: impl Into<Tag>) -> Result<Value,
     Ok(from_document_to_value(&parsed, tag))
 }
 
-fn from_xml(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
-    let args = args.evaluate_once(registry)?;
+async fn from_xml(
+    args: CommandArgs,
+    registry: &CommandRegistry,
+) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let args = args.evaluate_once(&registry).await?;
     let tag = args.name_tag();
     let input = args.input;
 
-    let stream = async_stream! {
-        let concat_string = input.collect_string(tag.clone()).await?;
+    let concat_string = input.collect_string(tag.clone()).await?;
 
+    Ok(
         match from_xml_string_to_value(concat_string.item, tag.clone()) {
             Ok(x) => match x {
-                Value { value: UntaggedValue::Table(list), .. } => {
-                    for l in list {
-                        yield ReturnSuccess::value(l);
-                    }
-                }
-                x => yield ReturnSuccess::value(x),
+                Value {
+                    value: UntaggedValue::Table(list),
+                    ..
+                } => futures::stream::iter(list.into_iter().map(ReturnSuccess::value))
+                    .to_output_stream(),
+                x => OutputStream::one(ReturnSuccess::value(x)),
             },
             Err(_) => {
-                yield Err(ShellError::labeled_error_with_secondary(
+                return Err(ShellError::labeled_error_with_secondary(
                     "Could not parse as XML",
                     "input cannot be parsed as XML",
                     &tag,
                     "value originates from here",
                     &concat_string.tag,
                 ))
-            } ,
-        }
-    };
-
-    Ok(stream.to_output_stream())
+            }
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
-
+    use super::ShellError;
     use crate::commands::from_xml;
     use indexmap::IndexMap;
     use nu_protocol::{UntaggedValue, Value};
@@ -299,5 +302,13 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use super::FromXML;
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromXML {})?)
     }
 }

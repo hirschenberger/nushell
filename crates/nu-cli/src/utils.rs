@@ -1,14 +1,13 @@
-pub mod data_processing;
+pub mod suggestions;
+pub mod test_bins;
 
+use crate::path::canonicalize;
 use nu_errors::ShellError;
 use nu_protocol::{UntaggedValue, Value};
 use std::path::{Component, Path, PathBuf};
 
 fn is_value_tagged_dir(value: &Value) -> bool {
-    match &value.value {
-        UntaggedValue::Row(_) | UntaggedValue::Table(_) => true,
-        _ => false,
-    }
+    matches!(&value.value, UntaggedValue::Row(_) | UntaggedValue::Table(_))
 }
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -19,6 +18,7 @@ pub struct ValueResource {
 
 impl ValueResource {}
 
+#[derive(Default)]
 pub struct ValueStructure {
     pub resources: Vec<ValueResource>,
 }
@@ -36,10 +36,7 @@ impl ValueStructure {
         }
 
         let path = if path.starts_with("/") {
-            match path.strip_prefix("/") {
-                Ok(p) => p,
-                Err(_) => path,
-            }
+            path.strip_prefix("/").unwrap_or(path)
         } else {
             path
         };
@@ -68,7 +65,7 @@ impl ValueStructure {
     }
 
     fn build(&mut self, src: &Value, lvl: usize) -> Result<(), ShellError> {
-        for entry in nu_value_ext::row_entries(src) {
+        for entry in src.row_entries() {
             let value = entry.1;
             let path = entry.0;
 
@@ -94,6 +91,7 @@ pub struct Res {
 
 impl Res {}
 
+#[derive(Default)]
 pub struct FileStructure {
     pub resources: Vec<Res>,
 }
@@ -138,7 +136,7 @@ impl FileStructure {
     }
 
     fn build(&mut self, src: &Path, lvl: usize) -> Result<(), ShellError> {
-        let source = dunce::canonicalize(src)?;
+        let source = canonicalize(std::env::current_dir()?, src)?;
 
         if source.is_dir() {
             for entry in std::fs::read_dir(src)? {
@@ -170,14 +168,8 @@ mod tests {
     use super::{FileStructure, Res, ValueResource, ValueStructure};
     use nu_protocol::{TaggedDictBuilder, UntaggedValue, Value};
     use nu_source::Tag;
-    use nu_test_support::fs;
-    use pretty_assertions::assert_eq;
+    use nu_test_support::{fs::Stub::EmptyFile, playground::Playground};
     use std::path::PathBuf;
-
-    fn fixtures() -> PathBuf {
-        let fixtures = fs::fixtures().join("formats");
-        dunce::canonicalize(fixtures).expect("Wrong path")
-    }
 
     fn structured_sample_record(key: &str, value: &str) -> Value {
         let mut record = TaggedDictBuilder::new(Tag::unknown());
@@ -265,75 +257,35 @@ mod tests {
 
     #[test]
     fn prepares_and_decorates_filesystem_source_files() {
-        let mut res = FileStructure::new();
+        Playground::setup("file_structure_test", |dirs, sandbox| {
+            sandbox.with_files(vec![
+                EmptyFile("sample.ini"),
+                EmptyFile("sample.eml"),
+                EmptyFile("cargo_sample.toml"),
+            ]);
 
-        res.walk_decorate(&fixtures())
-            .expect("Can not decorate files traversal.");
+            let mut res = FileStructure::new();
 
-        assert_eq!(
-            res.resources,
-            vec![
-                Res {
-                    loc: fixtures().join("appveyor.yml"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("caco3_plastics.csv"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("caco3_plastics.tsv"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("cargo_sample.toml"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("jonathan.xml"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sample.bson"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sample.db"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sample.ini"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sample.url"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sample_data.ods"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sample_data.xlsx"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("script.nu"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("script_multiline.nu"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("sgml_description.json"),
-                    at: 0
-                },
-                Res {
-                    loc: fixtures().join("utf16.ini"),
-                    at: 0
-                }
-            ]
-        );
+            res.walk_decorate(&dirs.test())
+                .expect("Can not decorate files traversal.");
+
+            assert_eq!(
+                res.resources,
+                vec![
+                    Res {
+                        loc: dirs.test().join("cargo_sample.toml"),
+                        at: 0
+                    },
+                    Res {
+                        loc: dirs.test().join("sample.eml"),
+                        at: 0
+                    },
+                    Res {
+                        loc: dirs.test().join("sample.ini"),
+                        at: 0
+                    }
+                ]
+            );
+        })
     }
 }

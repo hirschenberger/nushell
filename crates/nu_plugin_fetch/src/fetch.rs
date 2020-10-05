@@ -1,3 +1,4 @@
+use base64::encode;
 use mime::Mime;
 use nu_errors::ShellError;
 use nu_protocol::{CallInfo, CommandAction, ReturnSuccess, ReturnValue, UntaggedValue, Value};
@@ -9,56 +10,67 @@ use surf::mime;
 #[derive(Default)]
 pub struct Fetch {
     pub path: Option<Value>,
+    pub tag: Tag,
     pub has_raw: bool,
+    pub user: Option<String>,
+    pub password: Option<String>,
 }
 
 impl Fetch {
     pub fn new() -> Fetch {
         Fetch {
             path: None,
+            tag: Tag::unknown(),
             has_raw: false,
+            user: None,
+            password: None,
         }
     }
 
     pub fn setup(&mut self, call_info: CallInfo) -> ReturnValue {
-        self.path = Some(
-            match call_info.args.nth(0).ok_or_else(|| {
+        self.path = Some({
+            let file = call_info.args.nth(0).ok_or_else(|| {
                 ShellError::labeled_error(
                     "No file or directory specified",
                     "for command",
                     &call_info.name_tag,
                 )
-            })? {
-                file => file.clone(),
-            },
-        );
+            })?;
+            file.clone()
+        });
+        self.tag = call_info.name_tag.clone();
 
         self.has_raw = call_info.args.has("raw");
+
+        self.user = match call_info.args.get("user") {
+            Some(user) => Some(user.as_string()?),
+            None => None,
+        };
+
+        self.password = match call_info.args.get("password") {
+            Some(password) => Some(password.as_string()?),
+            None => None,
+        };
 
         ReturnSuccess::value(UntaggedValue::nothing().into_untagged_value())
     }
 }
 
-pub async fn fetch_helper(path: &Value, has_raw: bool, row: Value) -> ReturnValue {
-    let path_buf = path.as_path()?;
-    let path_str = path_buf.display().to_string();
-
-    //FIXME: this is a workaround because plugins don't yet support per-item iteration
-    let path_str = if path_str == "$it" {
-        let path_buf = row.as_path()?;
-        path_buf.display().to_string()
-    } else {
-        path_str
-    };
-
+pub async fn fetch(
+    path: &Value,
+    has_raw: bool,
+    user: Option<String>,
+    password: Option<String>,
+) -> ReturnValue {
+    let path_str = path.as_string()?;
     let path_span = path.tag.span;
 
-    let result = fetch(&path_str, path_span, has_raw).await;
+    let result = helper(&path_str, path_span, has_raw, user, password).await;
 
     if let Err(e) = result {
         return Err(e);
     }
-    let (file_extension, contents, contents_tag) = result?;
+    let (file_extension, value) = result?;
 
     let file_extension = if has_raw {
         None
@@ -68,33 +80,53 @@ pub async fn fetch_helper(path: &Value, has_raw: bool, row: Value) -> ReturnValu
         file_extension.or_else(|| path_str.split('.').last().map(String::from))
     };
 
-    let tagged_contents = contents.retag(&contents_tag);
-
     if let Some(extension) = file_extension {
         Ok(ReturnSuccess::Action(CommandAction::AutoConvert(
-            tagged_contents,
-            extension,
+            value, extension,
         )))
     } else {
-        ReturnSuccess::value(tagged_contents)
+        ReturnSuccess::value(value)
     }
 }
 
-pub async fn fetch(
+// Helper function that actually goes to retrieve the resource from the url given
+// The Option<String> return a possible file extension which can be used in AutoConvert commands
+async fn helper(
     location: &str,
     span: Span,
     has_raw: bool,
-) -> Result<(Option<String>, UntaggedValue, Tag), ShellError> {
-    if url::Url::parse(location).is_err() {
+    user: Option<String>,
+    password: Option<String>,
+) -> Result<(Option<String>, Value), ShellError> {
+    if let Err(e) = url::Url::parse(location) {
         return Err(ShellError::labeled_error(
-            "Incomplete or incorrect url",
+            format!("Incomplete or incorrect url:\n{:?}", e),
             "expected a full url",
             span,
         ));
     }
 
-    let response = surf::get(location).await;
-    match response {
+    let login = match (user, password) {
+        (Some(user), Some(password)) => Some(encode(&format!("{}:{}", user, password))),
+        (Some(user), _) => Some(encode(&format!("{}:", user))),
+        _ => None,
+    };
+    let mut response = surf::get(location);
+    if let Some(login) = login {
+        response = response.set_header("Authorization", format!("Basic {}", login));
+    }
+    let generate_error = |t: &str, e: Box<dyn std::error::Error>, span: &Span| {
+        ShellError::labeled_error(
+            format!("Could not load {} from remote url: {:?}", t, e),
+            "could not load",
+            span,
+        )
+    };
+    let tag = Tag {
+        span,
+        anchor: Some(AnchorLocation::Url(location.to_string())),
+    };
+    match response.await {
         Ok(mut r) => match r.headers().get("content-type") {
             Some(content_type) => {
                 let content_type = Mime::from_str(content_type).map_err(|_| {
@@ -107,93 +139,65 @@ pub async fn fetch(
                 match (content_type.type_(), content_type.subtype()) {
                     (mime::APPLICATION, mime::XML) => Ok((
                         Some("xml".to_string()),
-                        UntaggedValue::string(r.body_string().await.map_err(|_| {
-                            ShellError::labeled_error(
-                                "Could not load text from remote url",
-                                "could not load",
-                                span,
-                            )
-                        })?),
-                        Tag {
-                            span,
-                            anchor: Some(AnchorLocation::Url(location.to_string())),
-                        },
+                        UntaggedValue::string(
+                            r.body_string()
+                                .await
+                                .map_err(|e| generate_error("text", e, &span))?,
+                        )
+                        .into_value(tag),
                     )),
                     (mime::APPLICATION, mime::JSON) => Ok((
                         Some("json".to_string()),
-                        UntaggedValue::string(r.body_string().await.map_err(|_| {
-                            ShellError::labeled_error(
-                                "Could not load text from remote url",
-                                "could not load",
-                                span,
-                            )
-                        })?),
-                        Tag {
-                            span,
-                            anchor: Some(AnchorLocation::Url(location.to_string())),
-                        },
+                        UntaggedValue::string(
+                            r.body_string()
+                                .await
+                                .map_err(|e| generate_error("text", e, &span))?,
+                        )
+                        .into_value(tag),
                     )),
                     (mime::APPLICATION, mime::OCTET_STREAM) => {
-                        let buf: Vec<u8> = r.body_bytes().await.map_err(|_| {
-                            ShellError::labeled_error(
-                                "Could not load binary file",
-                                "could not load",
-                                span,
-                            )
-                        })?;
-                        Ok((
-                            None,
-                            UntaggedValue::binary(buf),
-                            Tag {
-                                span,
-                                anchor: Some(AnchorLocation::Url(location.to_string())),
-                            },
-                        ))
+                        let buf: Vec<u8> = r
+                            .body_bytes()
+                            .await
+                            .map_err(|e| generate_error("binary", Box::new(e), &span))?;
+                        Ok((None, UntaggedValue::binary(buf).into_value(tag)))
                     }
                     (mime::IMAGE, mime::SVG) => Ok((
                         Some("svg".to_string()),
-                        UntaggedValue::string(r.body_string().await.map_err(|_| {
-                            ShellError::labeled_error(
-                                "Could not load svg from remote url",
-                                "could not load",
-                                span,
-                            )
-                        })?),
-                        Tag {
-                            span,
-                            anchor: Some(AnchorLocation::Url(location.to_string())),
-                        },
+                        UntaggedValue::string(
+                            r.body_string()
+                                .await
+                                .map_err(|e| generate_error("svg", e, &span))?,
+                        )
+                        .into_value(tag),
                     )),
                     (mime::IMAGE, image_ty) => {
-                        let buf: Vec<u8> = r.body_bytes().await.map_err(|_| {
-                            ShellError::labeled_error(
-                                "Could not load image file",
-                                "could not load",
-                                span,
-                            )
-                        })?;
+                        let buf: Vec<u8> = r
+                            .body_bytes()
+                            .await
+                            .map_err(|e| generate_error("image", Box::new(e), &span))?;
                         Ok((
                             Some(image_ty.to_string()),
-                            UntaggedValue::binary(buf),
-                            Tag {
-                                span,
-                                anchor: Some(AnchorLocation::Url(location.to_string())),
-                            },
+                            UntaggedValue::binary(buf).into_value(tag),
                         ))
                     }
                     (mime::TEXT, mime::HTML) => Ok((
                         Some("html".to_string()),
-                        UntaggedValue::string(r.body_string().await.map_err(|_| {
-                            ShellError::labeled_error(
-                                "Could not load text from remote url",
-                                "could not load",
-                                span,
-                            )
-                        })?),
-                        Tag {
-                            span,
-                            anchor: Some(AnchorLocation::Url(location.to_string())),
-                        },
+                        UntaggedValue::string(
+                            r.body_string()
+                                .await
+                                .map_err(|e| generate_error("text", e, &span))?,
+                        )
+                        .into_value(tag),
+                    )),
+                    (mime::TEXT, mime::CSV) => Ok((
+                        Some("csv".to_string()),
+                        UntaggedValue::string(
+                            r.body_string()
+                                .await
+                                .map_err(|e| generate_error("text", e, &span))?,
+                        )
+                        .into_value(tag),
                     )),
                     (mime::TEXT, mime::PLAIN) => {
                         let path_extension = url::Url::parse(location)
@@ -215,17 +219,12 @@ pub async fn fetch(
 
                         Ok((
                             path_extension,
-                            UntaggedValue::string(r.body_string().await.map_err(|_| {
-                                ShellError::labeled_error(
-                                    "Could not load text from remote url",
-                                    "could not load",
-                                    span,
-                                )
-                            })?),
-                            Tag {
-                                span,
-                                anchor: Some(AnchorLocation::Url(location.to_string())),
-                            },
+                            UntaggedValue::string(
+                                r.body_string()
+                                    .await
+                                    .map_err(|e| generate_error("text", e, &span))?,
+                            )
+                            .into_value(tag),
                         ))
                     }
                     (_ty, _sub_ty) if has_raw => {
@@ -234,44 +233,22 @@ pub async fn fetch(
                         // For unsupported MIME types, we do not know if the data is UTF-8,
                         // so we get the raw body bytes and try to convert to UTF-8 if possible.
                         match std::str::from_utf8(&raw_bytes) {
-                            Ok(response_str) => Ok((
-                                None,
-                                UntaggedValue::string(response_str),
-                                Tag {
-                                    span,
-                                    anchor: Some(AnchorLocation::Url(location.to_string())),
-                                },
-                            )),
-                            Err(_) => Ok((
-                                None,
-                                UntaggedValue::binary(raw_bytes),
-                                Tag {
-                                    span,
-                                    anchor: Some(AnchorLocation::Url(location.to_string())),
-                                },
-                            )),
+                            Ok(response_str) => {
+                                Ok((None, UntaggedValue::string(response_str).into_value(tag)))
+                            }
+                            Err(_) => Ok((None, UntaggedValue::binary(raw_bytes).into_value(tag))),
                         }
                     }
-                    (ty, sub_ty) => Ok((
-                        None,
-                        UntaggedValue::string(format!(
-                            "Not yet supported MIME type: {} {}",
-                            ty, sub_ty
-                        )),
-                        Tag {
-                            span,
-                            anchor: Some(AnchorLocation::Url(location.to_string())),
-                        },
-                    )),
+                    (ty, sub_ty) => Err(ShellError::unimplemented(format!(
+                        "Not yet supported MIME type: {} {}",
+                        ty, sub_ty
+                    ))),
                 }
             }
+            // TODO: Should this return "nothing" or Err?
             None => Ok((
                 None,
-                UntaggedValue::string("No content type found".to_owned()),
-                Tag {
-                    span,
-                    anchor: Some(AnchorLocation::Url(location.to_string())),
-                },
+                UntaggedValue::string("No content type found".to_owned()).into_value(tag),
             )),
         },
         Err(_) => Err(ShellError::labeled_error(

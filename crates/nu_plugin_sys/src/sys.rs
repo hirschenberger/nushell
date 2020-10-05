@@ -1,8 +1,10 @@
 use futures_util::StreamExt;
 use heim::units::{frequency, information, thermodynamic_temperature, time};
 use heim::{disk, host, memory, net, sensors};
+use nu_errors::ShellError;
 use nu_protocol::{TaggedDictBuilder, UntaggedValue, Value};
 use nu_source::Tag;
+use num_bigint::BigInt;
 use std::ffi::OsStr;
 
 #[derive(Default)]
@@ -15,6 +17,7 @@ impl Sys {
 }
 
 async fn cpu(tag: Tag) -> Option<Value> {
+    let span = tag.span;
     match futures::future::try_join(heim::cpu::logical_count(), heim::cpu::frequency()).await {
         Ok((num_cpu, cpu_speed)) => {
             let mut cpu_idx = TaggedDictBuilder::with_capacity(tag, 4);
@@ -24,20 +27,29 @@ async fn cpu(tag: Tag) -> Option<Value> {
                 (cpu_speed.current().get::<frequency::hertz>() as f64 / 1_000_000_000.0 * 100.0)
                     .round()
                     / 100.0;
-            cpu_idx.insert_untagged("current ghz", UntaggedValue::decimal(current_speed));
+            cpu_idx.insert_untagged(
+                "current ghz",
+                UntaggedValue::decimal_from_float(current_speed, span),
+            );
 
             if let Some(min_speed) = cpu_speed.min() {
                 let min_speed =
                     (min_speed.get::<frequency::hertz>() as f64 / 1_000_000_000.0 * 100.0).round()
                         / 100.0;
-                cpu_idx.insert_untagged("min ghz", UntaggedValue::decimal(min_speed));
+                cpu_idx.insert_untagged(
+                    "min ghz",
+                    UntaggedValue::decimal_from_float(min_speed, span),
+                );
             }
 
             if let Some(max_speed) = cpu_speed.max() {
                 let max_speed =
                     (max_speed.get::<frequency::hertz>() as f64 / 1_000_000_000.0 * 100.0).round()
                         / 100.0;
-                cpu_idx.insert_untagged("max ghz", UntaggedValue::decimal(max_speed));
+                cpu_idx.insert_untagged(
+                    "max ghz",
+                    UntaggedValue::decimal_from_float(max_speed, span),
+                );
             }
 
             Some(cpu_idx.into_value())
@@ -55,29 +67,29 @@ async fn mem(tag: Tag) -> Value {
     if let Ok(memory) = memory_result {
         dict.insert_untagged(
             "total",
-            UntaggedValue::bytes(memory.total().get::<information::byte>()),
+            UntaggedValue::filesize(memory.total().get::<information::byte>()),
         );
         dict.insert_untagged(
             "free",
-            UntaggedValue::bytes(memory.free().get::<information::byte>()),
+            UntaggedValue::filesize(memory.free().get::<information::byte>()),
         );
     }
 
     if let Ok(swap) = swap_result {
         dict.insert_untagged(
             "swap total",
-            UntaggedValue::bytes(swap.total().get::<information::byte>()),
+            UntaggedValue::filesize(swap.total().get::<information::byte>()),
         );
         dict.insert_untagged(
             "swap free",
-            UntaggedValue::bytes(swap.free().get::<information::byte>()),
+            UntaggedValue::filesize(swap.free().get::<information::byte>()),
         );
     }
 
     dict.into_value()
 }
 
-async fn host(tag: Tag) -> Value {
+async fn host(tag: Tag) -> Result<Value, ShellError> {
     let mut dict = TaggedDictBuilder::with_capacity(&tag, 6);
 
     let (platform_result, uptime_result) =
@@ -97,25 +109,19 @@ async fn host(tag: Tag) -> Value {
 
     // Uptime
     if let Ok(uptime) = uptime_result {
-        let mut uptime_dict = TaggedDictBuilder::with_capacity(&tag, 4);
+        let uptime = uptime.get::<time::nanosecond>().round() as i64;
 
-        let uptime = uptime.get::<time::second>().round() as i64;
-        let days = uptime / (60 * 60 * 24);
-        let hours = (uptime - days * 60 * 60 * 24) / (60 * 60);
-        let minutes = (uptime - days * 60 * 60 * 24 - hours * 60 * 60) / 60;
-        let seconds = uptime % 60;
-
-        uptime_dict.insert_untagged("days", UntaggedValue::int(days));
-        uptime_dict.insert_untagged("hours", UntaggedValue::int(hours));
-        uptime_dict.insert_untagged("mins", UntaggedValue::int(minutes));
-        uptime_dict.insert_untagged("secs", UntaggedValue::int(seconds));
-
-        dict.insert_value("uptime", uptime_dict);
+        dict.insert_untagged("uptime", UntaggedValue::duration(BigInt::from(uptime)));
     }
 
     // Sessions
     // note: the heim host module has nomenclature "users"
-    let mut users = host::users();
+    let users = host::users().await.map_err(|_| {
+        ShellError::labeled_error("Unabled to get users", "could not load users", tag.span)
+    })?;
+
+    futures::pin_mut!(users);
+
     let mut user_vec = vec![];
     while let Some(user) = users.next().await {
         if let Ok(user) = user {
@@ -128,12 +134,21 @@ async fn host(tag: Tag) -> Value {
     let user_list = UntaggedValue::Table(user_vec);
     dict.insert_untagged("sessions", user_list);
 
-    dict.into_value()
+    Ok(dict.into_value())
 }
 
-async fn disks(tag: Tag) -> Option<UntaggedValue> {
+async fn disks(tag: Tag) -> Result<Option<UntaggedValue>, ShellError> {
     let mut output = vec![];
-    let mut partitions = disk::partitions_physical();
+    let partitions = disk::partitions_physical().await.map_err(|_| {
+        ShellError::labeled_error(
+            "Unabled to get disk list",
+            "could not load disk list",
+            tag.span,
+        )
+    })?;
+
+    futures::pin_mut!(partitions);
+
     while let Some(part) = partitions.next().await {
         if let Ok(part) = part {
             let mut dict = TaggedDictBuilder::with_capacity(&tag, 6);
@@ -155,15 +170,15 @@ async fn disks(tag: Tag) -> Option<UntaggedValue> {
             if let Ok(usage) = disk::usage(part.mount_point().to_path_buf()).await {
                 dict.insert_untagged(
                     "total",
-                    UntaggedValue::bytes(usage.total().get::<information::byte>()),
+                    UntaggedValue::filesize(usage.total().get::<information::byte>()),
                 );
                 dict.insert_untagged(
                     "used",
-                    UntaggedValue::bytes(usage.used().get::<information::byte>()),
+                    UntaggedValue::filesize(usage.used().get::<information::byte>()),
                 );
                 dict.insert_untagged(
                     "free",
-                    UntaggedValue::bytes(usage.free().get::<information::byte>()),
+                    UntaggedValue::filesize(usage.free().get::<information::byte>()),
                 );
             }
 
@@ -172,14 +187,15 @@ async fn disks(tag: Tag) -> Option<UntaggedValue> {
     }
 
     if !output.is_empty() {
-        Some(UntaggedValue::Table(output))
+        Ok(Some(UntaggedValue::Table(output)))
     } else {
-        None
+        Ok(None)
     }
 }
 
 async fn battery(tag: Tag) -> Option<UntaggedValue> {
     let mut output = vec![];
+    let span = tag.span;
 
     if let Ok(manager) = battery::Manager::new() {
         if let Ok(batteries) = manager.batteries() {
@@ -198,16 +214,18 @@ async fn battery(tag: Tag) -> Option<UntaggedValue> {
                     if let Some(time_to_full) = battery.time_to_full() {
                         dict.insert_untagged(
                             "mins to full",
-                            UntaggedValue::decimal(
-                                time_to_full.get::<battery::units::time::minute>(),
+                            UntaggedValue::decimal_from_float(
+                                time_to_full.get::<battery::units::time::minute>() as f64,
+                                span,
                             ),
                         );
                     }
                     if let Some(time_to_empty) = battery.time_to_empty() {
                         dict.insert_untagged(
                             "mins to empty",
-                            UntaggedValue::decimal(
-                                time_to_empty.get::<battery::units::time::minute>(),
+                            UntaggedValue::decimal_from_float(
+                                time_to_empty.get::<battery::units::time::minute>() as f64,
+                                span,
                             ),
                         );
                     }
@@ -226,8 +244,12 @@ async fn battery(tag: Tag) -> Option<UntaggedValue> {
 
 async fn temp(tag: Tag) -> Option<UntaggedValue> {
     let mut output = vec![];
+    let span = tag.span;
 
-    let mut sensors = sensors::temperatures();
+    let sensors = sensors::temperatures();
+
+    futures::pin_mut!(sensors);
+
     while let Some(sensor) = sensors.next().await {
         if let Ok(sensor) = sensor {
             let mut dict = TaggedDictBuilder::new(&tag);
@@ -237,23 +259,29 @@ async fn temp(tag: Tag) -> Option<UntaggedValue> {
             }
             dict.insert_untagged(
                 "temp",
-                UntaggedValue::decimal(
+                UntaggedValue::decimal_from_float(
                     sensor
                         .current()
-                        .get::<thermodynamic_temperature::degree_celsius>(),
+                        .get::<thermodynamic_temperature::degree_celsius>()
+                        as f64,
+                    span,
                 ),
             );
             if let Some(high) = sensor.high() {
                 dict.insert_untagged(
                     "high",
-                    UntaggedValue::decimal(high.get::<thermodynamic_temperature::degree_celsius>()),
+                    UntaggedValue::decimal_from_float(
+                        high.get::<thermodynamic_temperature::degree_celsius>() as f64,
+                        span,
+                    ),
                 );
             }
             if let Some(critical) = sensor.critical() {
                 dict.insert_untagged(
                     "critical",
-                    UntaggedValue::decimal(
-                        critical.get::<thermodynamic_temperature::degree_celsius>(),
+                    UntaggedValue::decimal_from_float(
+                        critical.get::<thermodynamic_temperature::degree_celsius>() as f64,
+                        span,
                     ),
                 );
             }
@@ -269,28 +297,37 @@ async fn temp(tag: Tag) -> Option<UntaggedValue> {
     }
 }
 
-async fn net(tag: Tag) -> Option<UntaggedValue> {
+async fn net(tag: Tag) -> Result<Option<UntaggedValue>, ShellError> {
     let mut output = vec![];
-    let mut io_counters = net::io_counters();
+    let io_counters = net::io_counters().await.map_err(|_| {
+        ShellError::labeled_error(
+            "Unabled to get network device list",
+            "could not load network device list",
+            tag.span,
+        )
+    })?;
+
+    futures::pin_mut!(io_counters);
+
     while let Some(nic) = io_counters.next().await {
         if let Ok(nic) = nic {
             let mut network_idx = TaggedDictBuilder::with_capacity(&tag, 3);
             network_idx.insert_untagged("name", UntaggedValue::string(nic.interface()));
             network_idx.insert_untagged(
                 "sent",
-                UntaggedValue::bytes(nic.bytes_sent().get::<information::byte>()),
+                UntaggedValue::filesize(nic.bytes_sent().get::<information::byte>()),
             );
             network_idx.insert_untagged(
                 "recv",
-                UntaggedValue::bytes(nic.bytes_recv().get::<information::byte>()),
+                UntaggedValue::filesize(nic.bytes_recv().get::<information::byte>()),
             );
             output.push(network_idx.into_value());
         }
     }
     if !output.is_empty() {
-        Some(UntaggedValue::Table(output))
+        Ok(Some(UntaggedValue::Table(output)))
     } else {
-        None
+        Ok(None)
     }
 }
 
@@ -307,18 +344,20 @@ pub async fn sysinfo(tag: Tag) -> Vec<Value> {
     .await;
     let (net, battery) = futures::future::join(net(tag.clone()), battery(tag.clone())).await;
 
-    sysinfo.insert_value("host", host);
+    if let Ok(host) = host {
+        sysinfo.insert_value("host", host);
+    }
     if let Some(cpu) = cpu {
         sysinfo.insert_value("cpu", cpu);
     }
-    if let Some(disks) = disks {
+    if let Ok(Some(disks)) = disks {
         sysinfo.insert_untagged("disks", disks);
     }
     sysinfo.insert_value("mem", memory);
     if let Some(temp) = temp {
         sysinfo.insert_untagged("temp", temp);
     }
-    if let Some(net) = net {
+    if let Ok(Some(net)) = net {
         sysinfo.insert_untagged("net", net);
     }
     if let Some(battery) = battery {

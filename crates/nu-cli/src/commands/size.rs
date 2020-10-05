@@ -1,10 +1,15 @@
+extern crate unicode_segmentation;
+
 use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
+use indexmap::indexmap;
 use nu_errors::ShellError;
 use nu_protocol::{ReturnSuccess, Signature, TaggedDictBuilder, UntaggedValue, Value};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub struct Size;
 
+#[async_trait]
 impl WholeStreamCommand for Size {
     fn name(&self) -> &str {
         "size"
@@ -18,12 +23,39 @@ impl WholeStreamCommand for Size {
         "Gather word count statistics on the text."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
         size(args, registry)
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Count the number of words in a string",
+                example: r#"echo "There are seven words in this sentence" | size"#,
+                result: Some(vec![UntaggedValue::row(indexmap! {
+                        "lines".to_string() => UntaggedValue::int(0).into(),
+                        "words".to_string() => UntaggedValue::int(7).into(),
+                        "chars".to_string() => UntaggedValue::int(38).into(),
+                        "bytes".to_string() => UntaggedValue::int(38).into(),
+                })
+                .into()]),
+            },
+            Example {
+                description: "Counts unicode characters correctly in a string",
+                example: r#"echo "Amélie Amelie" | size"#,
+                result: Some(vec![UntaggedValue::row(indexmap! {
+                        "lines".to_string() => UntaggedValue::int(0).into(),
+                        "words".to_string() => UntaggedValue::int(2).into(),
+                        "chars".to_string() => UntaggedValue::int(13).into(),
+                        "bytes".to_string() => UntaggedValue::int(15).into(),
+                })
+                .into()]),
+            },
+        ]
     }
 }
 
@@ -33,7 +65,6 @@ fn size(args: CommandArgs, _registry: &CommandRegistry) -> Result<OutputStream, 
     let name_span = tag.span;
 
     Ok(input
-        .values
         .map(move |v| {
             if let Ok(s) = v.as_string() {
                 ReturnSuccess::value(count(&s, &v.tag))
@@ -57,15 +88,15 @@ fn count(contents: &str, tag: impl Into<Tag>) -> Value {
     let bytes = contents.len() as i64;
     let mut end_of_word = true;
 
-    for c in contents.chars() {
+    for c in UnicodeSegmentation::graphemes(contents, true) {
         chars += 1;
 
         match c {
-            '\n' => {
+            "\n" => {
                 lines += 1;
                 end_of_word = true;
             }
-            ' ' => end_of_word = true,
+            " " => end_of_word = true,
             _ => {
                 if end_of_word {
                     words += 1;
@@ -81,7 +112,20 @@ fn count(contents: &str, tag: impl Into<Tag>) -> Value {
     dict.insert_untagged("lines", UntaggedValue::int(lines));
     dict.insert_untagged("words", UntaggedValue::int(words));
     dict.insert_untagged("chars", UntaggedValue::int(chars));
-    dict.insert_untagged("max length", UntaggedValue::int(bytes));
+    dict.insert_untagged("bytes", UntaggedValue::int(bytes));
 
     dict.into_value()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellError;
+    use super::Size;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Size {})?)
+    }
 }

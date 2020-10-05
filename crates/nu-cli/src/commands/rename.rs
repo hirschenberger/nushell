@@ -1,6 +1,6 @@
 use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
-use indexmap::IndexMap;
+use indexmap::indexmap;
 use nu_errors::ShellError;
 use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
 use nu_source::Tagged;
@@ -13,6 +13,7 @@ pub struct Arguments {
     rest: Vec<Tagged<String>>,
 }
 
+#[async_trait]
 impl WholeStreamCommand for Rename {
     fn name(&self) -> &str {
         "rename"
@@ -23,41 +24,62 @@ impl WholeStreamCommand for Rename {
             .required(
                 "column_name",
                 SyntaxShape::String,
-                "the name of the column to rename for",
+                "the new name for the first column",
             )
-            .rest(
-                SyntaxShape::Member,
-                "Additional column name(s) to rename for",
-            )
+            .rest(SyntaxShape::String, "the new name for additional columns")
     }
 
     fn usage(&self) -> &str {
         "Creates a new table with columns renamed."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, rename)?.run()
+        rename(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Rename a column",
+                example: "echo [[a, b]; [1, 2]] | rename my_column",
+                result: Some(vec![UntaggedValue::row(indexmap! {
+                        "my_column".to_string() => UntaggedValue::int(1).into(),
+                        "b".to_string() => UntaggedValue::int(2).into(),
+                })
+                .into()]),
+            },
+            Example {
+                description: "Rename many columns",
+                example: "echo [[a, b, c]; [1, 2, 3]] | rename eggs ham bacon",
+                result: Some(vec![UntaggedValue::row(indexmap! {
+                        "eggs".to_string() => UntaggedValue::int(1).into(),
+                        "ham".to_string() => UntaggedValue::int(2).into(),
+                        "bacon".to_string() => UntaggedValue::int(3).into(),
+                })
+                .into()]),
+            },
+        ]
     }
 }
 
-pub fn rename(
-    Arguments { column_name, rest }: Arguments,
-    RunnableContext { input, name, .. }: RunnableContext,
+pub async fn rename(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+    let (Arguments { column_name, rest }, input) = args.process(&registry).await?;
     let mut new_column_names = vec![vec![column_name]];
     new_column_names.push(rest);
 
     let new_column_names = new_column_names.into_iter().flatten().collect::<Vec<_>>();
 
-    let stream = input
-        .values
+    Ok(input
         .map(move |item| {
-            let mut result = VecDeque::new();
-
             if let Value {
                 value: UntaggedValue::Row(row),
                 tag,
@@ -77,21 +99,30 @@ pub fn rename(
 
                 let out = UntaggedValue::Row(renamed_row.into()).into_value(tag);
 
-                result.push_back(ReturnSuccess::value(out));
+                ReturnSuccess::value(out)
             } else {
-                result.push_back(ReturnSuccess::value(
+                ReturnSuccess::value(
                     UntaggedValue::Error(ShellError::labeled_error(
                         "no column names available",
                         "can't rename",
                         &name,
                     ))
                     .into_untagged_value(),
-                ));
+                )
             }
-
-            futures::stream::iter(result)
         })
-        .flatten();
+        .to_output_stream())
+}
 
-    Ok(stream.to_output_stream())
+#[cfg(test)]
+mod tests {
+    use super::Rename;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Rename {})?)
+    }
 }

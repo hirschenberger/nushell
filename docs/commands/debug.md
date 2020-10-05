@@ -2,40 +2,49 @@
 
 `debug` prints a debugging view of the table data. It is useful when you want to get the specific types of the data and while investigating errors.
 
-## Examples 
+## Examples
 
-```
-❯ ls | first 2 | debug
+```shell
+> ls | first 2 | debug
 ───┬──────────────────────────────────────────
- # │ <value> 
+ # │
 ───┼──────────────────────────────────────────
- 0 │ (name=".azure" 
-   │ type="Dir" 
-   │ size=nothing 
-   │ modified=2020-02-09T05:31:39.950305440Z((B 
-   │ mdate)) 
- 1 │ (name=".cargo" 
-   │ type="Dir" 
-   │ size=nothing 
-   │ modified=2020-01-06T05:45:30.933303081Z((B 
-   │ mdate)) 
+ 0 │ (name=".azure"
+   │ type="Dir"
+   │ size=nothing
+   │ modified=2020-02-09T05:31:39.950305440Z((B
+   │ mdate))
+ 1 │ (name=".cargo"
+   │ type="Dir"
+   │ size=nothing
+   │ modified=2020-01-06T05:45:30.933303081Z((B
+   │ mdate))
 ───┴──────────────────────────────────────────
-❯ ls | last 8 | get type | debug
-───┬─────────
- # │ <value> 
-───┼─────────
- 0 │ "Dir" 
- 1 │ "Dir" 
- 2 │ "File" 
- 3 │ "Dir" 
- 4 │ "File" 
- 5 │ "Dir" 
- 6 │ "Dir" 
- 7 │ "Dir" 
-───┴─────────
-❯ open --raw Cargo.toml | size | debug
-(lines=271 words=955 chars=7855 max length=7856)
-❯ du src/ | debug
+```
+
+```shell
+> ls | last 8 | get type | debug
+───┬───────────────────────
+ # │
+───┼───────────────────────
+ 0 │ "Dir"
+ 1 │ "Dir"
+ 2 │ "File"
+ 3 │ "Dir"
+ 4 │ "File"
+ 5 │ "Dir"
+ 6 │ "Dir"
+ 7 │ "Dir"
+───┴───────────────────────
+```
+
+```shell
+> open --raw Cargo.toml | size | debug
+(lines=139 words=560 chars=4607 bytes=4607)
+```
+
+```shell
+> du src/ | debug
 (path="src"(path)
  apparent=705300(bytesize)
  physical=1118208(bytesize)

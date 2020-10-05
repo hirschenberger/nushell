@@ -1,6 +1,6 @@
 # str
 
-Consumes either a single value or a table and converts the provided data to a string and optionally applies a change.
+Applies the subcommand to a value or a table.
 
 ## Examples
 
@@ -12,39 +12,74 @@ Consumes either a single value or a table and converts the provided data to a st
  0 │ X │ filesystem │ /home/TUX/stuff/expr/stuff
  1 │   │ filesystem │ /
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | str path --upcase
+```
+
+```shell
+> shells | str upcase path
 ━━━┯━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  # │   │ name       │ path
 ───┼───┼────────────┼────────────────────────────────
  0 │ X │ filesystem │ /HOME/TUX/STUFF/EXPR/STUFF
  1 │   │ filesystem │ /
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | str path --downcase
+```
+
+```shell
+> shells | str downcase path
 ━━━┯━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  # │   │ name       │ path
 ───┼───┼────────────┼────────────────────────────────
  0 │ X │ filesystem │ /home/tux/stuff/expr/stuff
  1 │   │ filesystem │ /
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | str # --substring "21, 99"
+```
+
+```shell
+> shells | str substring "21, 99" path
 ━━━┯━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  # │   │ name       │ path
 ───┼───┼────────────┼────────────────────────────────
  0 │ X │ filesystem │ stuff
  1 │   │ filesystem │
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-> shells | str # --substring "6,"
+```
+
+```shell
+> shells | str substring "6," path
 ━━━┯━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  # │   │ name       │ path
 ───┼───┼────────────┼────────────────────────────────
  0 │ X │ filesystem │ TUX/stuff/expr/stuff
  1 │   │ filesystem │
 ━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
 
-> echo "1, 2, 3" | split-row "," | str --to-int | sum
-━━━━━━━━━
- <value>
-─────────
-       6
-━━━━━━━━━
+```shell
+> echo "1, 2, 3" | split row "," | str to-int | math sum
+6
+```
+
+```shell
+> echo "nu" | str capitalize
+Nu
+```
+
+```shell
+> echo "Nu    " | str trim
+Nu
+```
+
+```shell
+> echo "Nushell" | str reverse
+llehsuN
+```
+
+```shell
+> shells | str find-replace "TUX" "skipper" path
+━━━┯━━━┯━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ # │   │ name       │ path
+───┼───┼────────────┼────────────────────────────────
+ 0 │ X │ filesystem │ /home/skipper/stuff/expr/stuff
+ 1 │   │ filesystem │ /
+━━━┷━━━┷━━━━━━━━━━━━┷━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```

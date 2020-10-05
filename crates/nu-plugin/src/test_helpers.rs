@@ -40,18 +40,10 @@ impl<'a, T: Plugin> PluginTest<'a, T> {
 
     pub fn test(&mut self) -> Result<Vec<ReturnValue>, ShellError> {
         let return_values = self.plugin.filter(self.input.clone());
-
-        let mut return_values = match return_values {
-            Ok(filtered) => filtered,
-            Err(reason) => return Err(reason),
-        };
-
+        let mut return_values = return_values?;
         let end = self.plugin.end_filter();
 
-        match end {
-            Ok(filter_ended) => return_values.extend(filter_ended),
-            Err(reason) => return Err(reason),
-        }
+        return_values.extend(end?);
 
         self.plugin.quit();
         Ok(return_values)
@@ -84,12 +76,7 @@ impl<'a, T: Plugin> PluginTest<'a, T> {
             }
         });
 
-        let began = self.plugin.begin_filter(call_stub);
-
-        let return_values = match began {
-            Ok(values) => Ok(values),
-            Err(reason) => Err(reason),
-        };
+        let return_values = self.plugin.begin_filter(call_stub);
 
         callback(self.plugin, return_values);
         self
@@ -172,9 +159,10 @@ pub fn expect_return_value_at(
 }
 
 pub mod value {
+    use bigdecimal::BigDecimal;
     use nu_errors::ShellError;
     use nu_protocol::{Primitive, TaggedDictBuilder, UntaggedValue, Value};
-    use nu_source::Tag;
+    use nu_source::{Span, Tag};
     use nu_value_ext::ValueExt;
     use num_bigint::BigInt;
 
@@ -184,6 +172,14 @@ pub mod value {
 
     pub fn int(i: impl Into<BigInt>) -> Value {
         UntaggedValue::Primitive(Primitive::Int(i.into())).into_untagged_value()
+    }
+
+    pub fn decimal(f: impl Into<BigDecimal>) -> Value {
+        UntaggedValue::decimal(f.into()).into_untagged_value()
+    }
+
+    pub fn decimal_from_float(f: f64) -> Value {
+        UntaggedValue::decimal_from_float(f, Span::unknown()).into_untagged_value()
     }
 
     pub fn string(input: impl Into<String>) -> Value {
@@ -209,5 +205,14 @@ pub mod value {
             table(&paths.to_vec()).as_column_path()?.item,
         ))
         .into_untagged_value())
+    }
+
+    #[macro_export]
+    macro_rules! row {
+        ($( $key: expr => $val: expr ),*) => {{
+             let mut map = ::indexmap::IndexMap::new();
+             $( map.insert($key, $val); )*
+             ::nu_protocol::UntaggedValue::row(map).into_untagged_value()
+        }}
     }
 }

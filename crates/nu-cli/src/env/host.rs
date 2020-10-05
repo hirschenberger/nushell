@@ -1,14 +1,11 @@
 use crate::prelude::*;
 #[cfg(test)]
 use indexmap::IndexMap;
-use nu_errors::ShellError;
+// use nu_errors::ShellError;
 use std::ffi::OsString;
 use std::fmt::Debug;
 
 pub trait Host: Debug + Send {
-    fn out_terminal(&self) -> Option<Box<term::StdoutTerminal>>;
-    fn err_terminal(&self) -> Option<Box<term::StderrTerminal>>;
-
     fn out_termcolor(&self) -> termcolor::StandardStream;
     fn err_termcolor(&self) -> termcolor::StandardStream;
 
@@ -24,14 +21,6 @@ pub trait Host: Debug + Send {
 }
 
 impl Host for Box<dyn Host> {
-    fn out_terminal(&self) -> Option<Box<term::StdoutTerminal>> {
-        (**self).out_terminal()
-    }
-
-    fn err_terminal(&self) -> Option<Box<term::StderrTerminal>> {
-        (**self).err_terminal()
-    }
-
     fn stdout(&mut self, out: &str) {
         (**self).stdout(out)
     }
@@ -73,14 +62,6 @@ impl Host for Box<dyn Host> {
 pub struct BasicHost;
 
 impl Host for BasicHost {
-    fn out_terminal(&self) -> Option<Box<term::StdoutTerminal>> {
-        term::stdout()
-    }
-
-    fn err_terminal(&self) -> Option<Box<term::StderrTerminal>> {
-        term::stderr()
-    }
-
     fn stdout(&mut self, out: &str) {
         match out {
             "\n" => outln!(""),
@@ -95,20 +76,45 @@ impl Host for BasicHost {
         }
     }
 
+    #[allow(unused_variables)]
     fn vars(&mut self) -> Vec<(String, String)> {
-        std::env::vars().collect::<Vec<_>>()
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::vars().collect::<Vec<_>>()
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            vec![]
+        }
     }
 
+    #[allow(unused_variables)]
     fn env_get(&mut self, key: OsString) -> Option<OsString> {
-        std::env::var_os(key)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::var_os(key)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     }
 
+    #[allow(unused_variables)]
     fn env_set(&mut self, key: OsString, value: OsString) {
-        std::env::set_var(key, value);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::set_var(key, value);
+        }
     }
 
+    #[allow(unused_variables)]
     fn env_rm(&mut self, key: OsString) {
-        std::env::remove_var(key);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::env::remove_var(key);
+        }
     }
 
     fn out_termcolor(&self) -> termcolor::StandardStream {
@@ -120,7 +126,9 @@ impl Host for BasicHost {
     }
 
     fn width(&self) -> usize {
-        std::cmp::max(textwrap::termwidth(), 20)
+        let (mut term_width, _) = term_size::dimensions().unwrap_or_else(|| (20, 20));
+        term_width -= 1;
+        std::cmp::max(term_width, 20)
     }
 }
 
@@ -143,14 +151,6 @@ impl FakeHost {
 
 #[cfg(test)]
 impl Host for FakeHost {
-    fn out_terminal(&self) -> Option<Box<term::StdoutTerminal>> {
-        None
-    }
-
-    fn err_terminal(&self) -> Option<Box<term::StderrTerminal>> {
-        None
-    }
-
     fn stdout(&mut self, out: &str) {
         self.line_written = out.to_string();
     }
@@ -200,13 +200,13 @@ impl Host for FakeHost {
     }
 }
 
-pub(crate) fn handle_unexpected<T>(
-    host: &mut dyn Host,
-    func: impl FnOnce(&mut dyn Host) -> Result<T, ShellError>,
-) {
-    let result = func(host);
+// pub(crate) fn handle_unexpected<T>(
+//     host: &mut dyn Host,
+//     func: impl FnOnce(&mut dyn Host) -> Result<T, ShellError>,
+// ) {
+//     let result = func(host);
 
-    if let Err(err) = result {
-        host.stderr(&format!("Something unexpected happened:\n{:?}", err));
-    }
-}
+//     if let Err(err) = result {
+//         host.stderr(&format!("Something unexpected happened:\n{:?}", err));
+//     }
+// }

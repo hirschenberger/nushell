@@ -1,6 +1,7 @@
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape};
 use nu_source::Tagged;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
@@ -9,46 +10,80 @@ pub struct Touch;
 
 #[derive(Deserialize)]
 pub struct TouchArgs {
-    pub target: Tagged<PathBuf>,
+    target: Tagged<PathBuf>,
+    rest: Vec<Tagged<PathBuf>>,
 }
 
-impl PerItemCommand for Touch {
+#[async_trait]
+impl WholeStreamCommand for Touch {
     fn name(&self) -> &str {
         "touch"
     }
     fn signature(&self) -> Signature {
-        Signature::build("touch").required(
-            "filename",
-            SyntaxShape::Path,
-            "the path of the file you want to create",
-        )
+        Signature::build("touch")
+            .required(
+                "filename",
+                SyntaxShape::Path,
+                "the path of the file you want to create",
+            )
+            .rest(SyntaxShape::Path, "additional files to create")
     }
     fn usage(&self) -> &str {
-        "creates a file"
+        "creates one or more files"
     }
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        call_info
-            .process(&raw_args.shell_manager, raw_args.ctrl_c.clone(), touch)?
-            .run()
+        touch(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Creates \"fixture.json\"",
+                example: "touch fixture.json",
+                result: None,
+            },
+            Example {
+                description: "Creates files a, b and c",
+                example: "touch a b c",
+                result: None,
+            },
+        ]
     }
 }
-fn touch(args: TouchArgs, _context: &RunnablePerItemContext) -> Result<OutputStream, ShellError> {
-    match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(&args.target)
-    {
-        Ok(_) => Ok(OutputStream::empty()),
-        Err(err) => Err(ShellError::labeled_error(
-            "File Error",
-            err.to_string(),
-            &args.target.tag,
-        )),
+
+async fn touch(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let (TouchArgs { target, rest }, _) = args.process(&registry).await?;
+
+    for item in vec![target].into_iter().chain(rest.into_iter()) {
+        match OpenOptions::new().write(true).create(true).open(&item) {
+            Ok(_) => continue,
+            Err(err) => {
+                return Err(ShellError::labeled_error(
+                    "File Error",
+                    err.to_string(),
+                    &item.tag,
+                ))
+            }
+        }
+    }
+
+    Ok(OutputStream::empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellError;
+    use super::Touch;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Touch {})?)
     }
 }

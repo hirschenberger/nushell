@@ -1,12 +1,10 @@
-extern crate filesize;
-
-use crate::commands::command::RunnablePerItemContext;
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use filesize::file_real_size_fast;
 use glob::*;
 use indexmap::map::IndexMap;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
+use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
 use nu_source::Tagged;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -32,7 +30,8 @@ pub struct DuArgs {
     min_size: Option<Tagged<u64>>,
 }
 
-impl PerItemCommand for Du {
+#[async_trait]
+impl WholeStreamCommand for Du {
     fn name(&self) -> &str {
         NAME
     }
@@ -42,7 +41,7 @@ impl PerItemCommand for Du {
             .optional("path", SyntaxShape::Pattern, "starting directory")
             .switch(
                 "all",
-                "Output File sizes as well as directory sizes",
+                "Output file sizes as well as directory sizes",
                 Some('a'),
             )
             .switch(
@@ -74,115 +73,121 @@ impl PerItemCommand for Du {
         "Find disk usage sizes of specified items"
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        call_info
-            .process(&raw_args.shell_manager, raw_args.ctrl_c.clone(), du)?
-            .run()
+        du(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Disk usage of the current directory",
+            example: "du",
+            result: None,
+        }]
     }
 }
 
-fn du(args: DuArgs, ctx: &RunnablePerItemContext) -> Result<OutputStream, ShellError> {
-    let tag = ctx.name.clone();
+async fn du(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let tag = args.call_info.name_tag.clone();
+    let ctrl_c = args.ctrl_c.clone();
+    let ctrl_c_copy = ctrl_c.clone();
 
-    let exclude = args
-        .exclude
-        .clone()
-        .map_or(Ok(None), move |x| match Pattern::new(&x.item) {
-            Ok(p) => Ok(Some(p)),
-            Err(e) => Err(ShellError::labeled_error(
-                e.msg,
-                "Glob error",
-                x.tag.clone(),
-            )),
-        })?;
-    let path = args.path.clone();
-    let filter_files = path.is_none();
-    let paths = match path {
-        Some(p) => match glob::glob_with(
-            p.item.to_str().expect("Why isn't this encoded properly?"),
-            GLOB_PARAMS,
-        ) {
-            Ok(g) => Ok(g),
-            Err(e) => Err(ShellError::labeled_error(
-                e.msg,
-                "Glob error",
-                p.tag.clone(),
-            )),
-        },
-        None => match glob::glob_with("*", GLOB_PARAMS) {
-            Ok(g) => Ok(g),
-            Err(e) => Err(ShellError::labeled_error(e.msg, "Glob error", tag.clone())),
-        },
-    }?
+    let (args, _): (DuArgs, _) = args.process(&registry).await?;
+    let exclude = args.exclude.map_or(Ok(None), move |x| {
+        Pattern::new(&x.item)
+            .map(Option::Some)
+            .map_err(|e| ShellError::labeled_error(e.msg, "glob error", x.tag.clone()))
+    })?;
+
+    let include_files = args.all;
+    let paths = match args.path {
+        Some(p) => {
+            let p = p.item.to_str().expect("Why isn't this encoded properly?");
+            glob::glob_with(p, GLOB_PARAMS)
+        }
+        None => glob::glob_with("*", GLOB_PARAMS),
+    }
+    .map_err(|e| ShellError::labeled_error(e.msg, "glob error", tag.clone()))?
     .filter(move |p| {
-        if filter_files {
+        if include_files {
+            true
+        } else {
             match p {
                 Ok(f) if f.is_dir() => true,
                 Err(e) if e.path().is_dir() => true,
                 _ => false,
             }
-        } else {
-            true
         }
     })
-    .map(move |p| match p {
-        Err(e) => Err(glob_err_into(e)),
-        Ok(s) => Ok(s),
-    });
+    .map(|v| v.map_err(glob_err_into));
 
-    let ctrl_c = ctx.ctrl_c.clone();
     let all = args.all;
     let deref = args.deref;
     let max_depth = args.max_depth.map(|f| f.item);
     let min_size = args.min_size.map(|f| f.item);
 
-    let stream = async_stream! {
-        let params = DirBuilder {
-            tag: tag.clone(),
-            min: min_size,
-            deref,
-            ex: exclude,
-            all,
-        };
-        for path in paths {
-            if ctrl_c.load(Ordering::SeqCst) {
-                break;
-            }
-            match path {
-                Ok(p) => {
-                    if p.is_dir() {
-                        yield Ok(ReturnSuccess::Value(
-                            DirInfo::new(p, &params, max_depth).into(),
-                        ));
-                    } else {
-                        match FileInfo::new(p, deref, tag.clone()) {
-                            Ok(f) => yield Ok(ReturnSuccess::Value(f.into())),
-                            Err(e) => yield Err(e)
-                        }
+    let params = DirBuilder {
+        tag: tag.clone(),
+        min: min_size,
+        deref,
+        exclude,
+        all,
+    };
+
+    let inp = futures::stream::iter(paths);
+
+    Ok(inp
+        .flat_map(move |path| match path {
+            Ok(p) => {
+                let mut output = vec![];
+                if p.is_dir() {
+                    output.push(Ok(ReturnSuccess::Value(
+                        DirInfo::new(p, &params, max_depth, ctrl_c.clone()).into(),
+                    )));
+                } else {
+                    for v in FileInfo::new(p, deref, tag.clone()).into_iter() {
+                        output.push(Ok(ReturnSuccess::Value(v.into())));
                     }
                 }
-                Err(e) => yield Err(e),
+                futures::stream::iter(output)
             }
-        }
-    };
-    Ok(stream.to_output_stream())
+            Err(e) => futures::stream::iter(vec![Err(e)]),
+        })
+        .interruptible(ctrl_c_copy)
+        .to_output_stream())
 }
 
-struct DirBuilder {
+pub struct DirBuilder {
     tag: Tag,
     min: Option<u64>,
     deref: bool,
-    ex: Option<Pattern>,
+    exclude: Option<Pattern>,
     all: bool,
 }
 
-struct DirInfo {
+impl DirBuilder {
+    pub fn new(
+        tag: Tag,
+        min: Option<u64>,
+        deref: bool,
+        exclude: Option<Pattern>,
+        all: bool,
+    ) -> DirBuilder {
+        DirBuilder {
+            tag,
+            min,
+            deref,
+            exclude,
+            all,
+        }
+    }
+}
+
+pub struct DirInfo {
     dirs: Vec<DirInfo>,
     files: Vec<FileInfo>,
     errors: Vec<ShellError>,
@@ -225,7 +230,12 @@ impl FileInfo {
 }
 
 impl DirInfo {
-    fn new(path: impl Into<PathBuf>, params: &DirBuilder, depth: Option<u64>) -> Self {
+    pub fn new(
+        path: impl Into<PathBuf>,
+        params: &DirBuilder,
+        depth: Option<u64>,
+        ctrl_c: Arc<AtomicBool>,
+    ) -> Self {
         let path = path.into();
 
         let mut s = Self {
@@ -241,17 +251,19 @@ impl DirInfo {
         match std::fs::read_dir(&s.path) {
             Ok(d) => {
                 for f in d {
+                    if ctrl_c.load(Ordering::SeqCst) {
+                        break;
+                    }
+
                     match f {
                         Ok(i) => match i.file_type() {
                             Ok(t) if t.is_dir() => {
-                                s = s.add_dir(i.path(), depth, &params);
+                                s = s.add_dir(i.path(), depth, &params, ctrl_c.clone())
                             }
-                            Ok(_t) => {
-                                s = s.add_file(i.path(), &params);
-                            }
-                            Err(e) => s = s.add_error(ShellError::from(e)),
+                            Ok(_t) => s = s.add_file(i.path(), &params),
+                            Err(e) => s = s.add_error(e.into()),
                         },
-                        Err(e) => s = s.add_error(ShellError::from(e)),
+                        Err(e) => s = s.add_error(e.into()),
                     }
                 }
             }
@@ -265,6 +277,7 @@ impl DirInfo {
         path: impl Into<PathBuf>,
         mut depth: Option<u64>,
         params: &DirBuilder,
+        ctrl_c: Arc<AtomicBool>,
     ) -> Self {
         if let Some(current) = depth {
             if let Some(new) = current.checked_sub(1) {
@@ -274,7 +287,7 @@ impl DirInfo {
             }
         }
 
-        let d = DirInfo::new(path, &params, depth);
+        let d = DirInfo::new(path, &params, depth, ctrl_c);
         self.size += d.size;
         self.blocks += d.blocks;
         self.dirs.push(d);
@@ -283,8 +296,11 @@ impl DirInfo {
 
     fn add_file(mut self, f: impl Into<PathBuf>, params: &DirBuilder) -> Self {
         let f = f.into();
-        let ex = params.ex.as_ref().map_or(false, |x| x.matches_path(&f));
-        if !ex {
+        let include = params
+            .exclude
+            .as_ref()
+            .map_or(true, |x| !x.matches_path(&f));
+        if include {
             match FileInfo::new(f, params.deref, self.tag.clone()) {
                 Ok(file) => {
                     let inc = params.min.map_or(true, |s| file.size >= s);
@@ -306,6 +322,10 @@ impl DirInfo {
         self.errors.push(e);
         self
     }
+
+    pub fn get_size(&self) -> u64 {
+        self.size
+    }
 }
 
 fn glob_err_into(e: GlobError) -> ShellError {
@@ -313,55 +333,51 @@ fn glob_err_into(e: GlobError) -> ShellError {
     ShellError::from(e)
 }
 
+fn value_from_vec<V>(vec: Vec<V>, tag: &Tag) -> Value
+where
+    V: Into<Value>,
+{
+    if vec.is_empty() {
+        UntaggedValue::nothing()
+    } else {
+        let values = vec.into_iter().map(Into::into).collect::<Vec<Value>>();
+        UntaggedValue::Table(values)
+    }
+    .into_value(tag)
+}
+
 impl From<DirInfo> for Value {
     fn from(d: DirInfo) -> Self {
         let mut r: IndexMap<String, Value> = IndexMap::new();
+
         r.insert(
             "path".to_string(),
-            UntaggedValue::path(d.path).retag(d.tag.clone()),
+            UntaggedValue::path(d.path).into_value(&d.tag),
         );
+
         r.insert(
             "apparent".to_string(),
-            UntaggedValue::bytes(d.size).retag(d.tag.clone()),
+            UntaggedValue::filesize(d.size).into_value(&d.tag),
         );
+
         r.insert(
             "physical".to_string(),
-            UntaggedValue::bytes(d.blocks).retag(d.tag.clone()),
+            UntaggedValue::filesize(d.blocks).into_value(&d.tag),
         );
-        if !d.files.is_empty() {
-            let v = Value {
-                value: UntaggedValue::Table(
-                    d.files
-                        .into_iter()
-                        .map(move |f| f.into())
-                        .collect::<Vec<Value>>(),
-                ),
-                tag: d.tag.clone(),
-            };
-            r.insert("files".to_string(), v);
-        }
-        if !d.dirs.is_empty() {
-            let v = Value {
-                value: UntaggedValue::Table(
-                    d.dirs
-                        .into_iter()
-                        .map(move |d| d.into())
-                        .collect::<Vec<Value>>(),
-                ),
-                tag: d.tag.clone(),
-            };
-            r.insert("directories".to_string(), v);
-        }
+
+        r.insert("directories".to_string(), value_from_vec(d.dirs, &d.tag));
+
+        r.insert("files".to_string(), value_from_vec(d.files, &d.tag));
+
         if !d.errors.is_empty() {
-            let v = Value {
-                value: UntaggedValue::Table(
-                    d.errors
-                        .into_iter()
-                        .map(move |e| UntaggedValue::Error(e).into_untagged_value())
-                        .collect::<Vec<Value>>(),
-                ),
-                tag: d.tag.clone(),
-            };
+            let v = UntaggedValue::Table(
+                d.errors
+                    .into_iter()
+                    .map(move |e| UntaggedValue::Error(e).into_untagged_value())
+                    .collect::<Vec<Value>>(),
+            )
+            .into_value(&d.tag);
+
             r.insert("errors".to_string(), v);
         }
 
@@ -375,22 +391,48 @@ impl From<DirInfo> for Value {
 impl From<FileInfo> for Value {
     fn from(f: FileInfo) -> Self {
         let mut r: IndexMap<String, Value> = IndexMap::new();
+
         r.insert(
             "path".to_string(),
-            UntaggedValue::path(f.path).retag(f.tag.clone()),
+            UntaggedValue::path(f.path).into_value(&f.tag),
         );
+
         r.insert(
             "apparent".to_string(),
-            UntaggedValue::bytes(f.size).retag(f.tag.clone()),
+            UntaggedValue::filesize(f.size).into_value(&f.tag),
         );
-        let b = match f.blocks {
-            Some(k) => UntaggedValue::bytes(k).retag(f.tag.clone()),
-            None => UntaggedValue::nothing().retag(f.tag.clone()),
-        };
+
+        let b = f
+            .blocks
+            .map(UntaggedValue::filesize)
+            .unwrap_or_else(UntaggedValue::nothing)
+            .into_value(&f.tag);
+
         r.insert("physical".to_string(), b);
-        Value {
-            value: UntaggedValue::row(r),
-            tag: f.tag,
-        }
+
+        r.insert(
+            "directories".to_string(),
+            UntaggedValue::nothing().into_value(&f.tag),
+        );
+
+        r.insert(
+            "files".to_string(),
+            UntaggedValue::nothing().into_value(&f.tag),
+        );
+
+        UntaggedValue::row(r).into_value(&f.tag)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Du;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Du {})?)
     }
 }

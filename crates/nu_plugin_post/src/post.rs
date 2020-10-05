@@ -42,24 +42,24 @@ impl Post {
     }
 
     pub fn setup(&mut self, call_info: CallInfo) -> ReturnValue {
-        self.path = Some(
-            match call_info.args.nth(0).ok_or_else(|| {
+        self.path = Some({
+            let file = call_info.args.nth(0).ok_or_else(|| {
                 ShellError::labeled_error(
                     "No file or directory specified",
                     "for command",
                     &call_info.name_tag,
                 )
-            })? {
-                file => file.clone(),
-            },
-        );
+            })?;
+            file.clone()
+        });
 
         self.has_raw = call_info.args.has("raw");
 
-        self.body = match call_info.args.nth(1).ok_or_else(|| {
-            ShellError::labeled_error("No body specified", "for command", &call_info.name_tag)
-        })? {
-            file => Some(file.clone()),
+        self.body = {
+            let file = call_info.args.nth(1).ok_or_else(|| {
+                ShellError::labeled_error("No body specified", "for command", &call_info.name_tag)
+            })?;
+            Some(file.clone())
         };
 
         self.user = match call_info.args.get("user") {
@@ -87,29 +87,9 @@ pub async fn post_helper(
     user: Option<String>,
     password: Option<String>,
     headers: &[HeaderKind],
-    row: Value,
 ) -> ReturnValue {
     let path_tag = path.tag.clone();
-    let path_str = path.as_string()?.to_string();
-
-    //FIXME: this is a workaround because plugins don't yet support per-item iteration
-    let path_str = if path_str == "$it" {
-        let path_buf = row.as_path()?;
-        path_buf.display().to_string()
-    } else {
-        path_str
-    };
-
-    //FIXME: this is a workaround because plugins don't yet support per-item iteration
-    let body = if let Ok(x) = body.as_string() {
-        if x == "$it" {
-            &row
-        } else {
-            body
-        }
-    } else {
-        body
-    };
+    let path_str = path.as_string()?;
 
     let (file_extension, contents, contents_tag) =
         post(&path_str, &body, user, password, &headers, path_tag.clone()).await?;
@@ -367,11 +347,14 @@ pub async fn post(
 pub fn value_to_json_value(v: &Value) -> Result<serde_json::Value, ShellError> {
     Ok(match &v.value {
         UntaggedValue::Primitive(Primitive::Boolean(b)) => serde_json::Value::Bool(*b),
-        UntaggedValue::Primitive(Primitive::Bytes(b)) => serde_json::Value::Number(
+        UntaggedValue::Primitive(Primitive::Filesize(b)) => serde_json::Value::Number(
             serde_json::Number::from(b.to_u64().expect("What about really big numbers")),
         ),
-        UntaggedValue::Primitive(Primitive::Duration(secs)) => {
-            serde_json::Value::Number(serde_json::Number::from(*secs))
+        UntaggedValue::Primitive(Primitive::Duration(i)) => {
+            serde_json::Value::Number(serde_json::Number::from(CoerceInto::<i64>::coerce_into(
+                i.tagged(&v.tag),
+                "converting to JSON number",
+            )?))
         }
         UntaggedValue::Primitive(Primitive::Date(d)) => serde_json::Value::String(d.to_string()),
         UntaggedValue::Primitive(Primitive::EndOfStream) => serde_json::Value::Null,

@@ -1,22 +1,14 @@
-use crate::commands::group_by::group;
 use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
-use crate::utils::data_processing::{columns_sorted, evaluate, map_max, reduce, t_sort};
 use nu_errors::ShellError;
 use nu_protocol::{
-    Primitive, ReturnSuccess, Signature, SyntaxShape, TaggedDictBuilder, UntaggedValue, Value,
+    ColumnPath, ReturnSuccess, Signature, SyntaxShape, TaggedDictBuilder, UntaggedValue, Value,
 };
 use nu_source::Tagged;
-use num_traits::{ToPrimitive, Zero};
 
 pub struct Histogram;
 
-#[derive(Deserialize)]
-pub struct HistogramArgs {
-    column_name: Tagged<String>,
-    rest: Vec<Tagged<String>>,
-}
-
+#[async_trait]
 impl WholeStreamCommand for Histogram {
     fn name(&self) -> &str {
         "histogram"
@@ -24,13 +16,14 @@ impl WholeStreamCommand for Histogram {
 
     fn signature(&self) -> Signature {
         Signature::build("histogram")
-            .required(
-                "column_name",
-                SyntaxShape::String,
-                "the name of the column to graph by",
+            .named(
+                "use",
+                SyntaxShape::ColumnPath,
+                "Use data at the column path given as valuator",
+                None,
             )
             .rest(
-                SyntaxShape::Member,
+                SyntaxShape::ColumnPath,
                 "column name to give the histogram's frequency column",
             )
     }
@@ -39,122 +32,207 @@ impl WholeStreamCommand for Histogram {
         "Creates a new table with a histogram based on the column name passed in."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, histogram)?.run()
+        histogram(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Get a histogram for the types of files",
+                example: "ls | histogram type",
+                result: None,
+            },
+            Example {
+                description:
+                    "Get a histogram for the types of files, with frequency column named percentage",
+                example: "ls | histogram type percentage",
+                result: None,
+            },
+            Example {
+                description: "Get a histogram for a list of numbers",
+                example: "echo [1 2 3 1 1 1 2 2 1 1] | histogram",
+                result: None,
+            },
+        ]
     }
 }
 
-pub fn histogram(
-    HistogramArgs { column_name, rest }: HistogramArgs,
-    RunnableContext { input, name, .. }: RunnableContext,
+pub async fn histogram(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let stream = async_stream! {
-        let values: Vec<Value> = input.values.collect().await;
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+    let (input, args) = args.evaluate_once(&registry).await?.parts();
 
-        let Tagged { item: group_by, .. } = column_name.clone();
+    let values: Vec<Value> = input.collect().await;
 
-        let groups = group(&column_name, values, &name)?;
-        let group_labels = columns_sorted(Some(group_by.clone()), &groups, &name);
-        let sorted = t_sort(Some(group_by.clone()), None, &groups, &name)?;
-        let evaled = evaluate(&sorted, None, &name)?;
-        let reduced = reduce(&evaled, None, &name)?;
-        let maxima = map_max(&reduced, None, &name)?;
-        let percents = percentages(&reduced, maxima, &name)?;
+    let mut columns = args
+        .positional_iter()
+        .map(|c| c.as_column_path())
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
 
-        match percents {
-            Value {
-                value: UntaggedValue::Table(datasets),
-                ..
-            } => {
-
-                let mut idx = 0;
-
-                let column_names_supplied: Vec<_> = rest.iter().map(|f| f.item.clone()).collect();
-
-                let frequency_column_name = if column_names_supplied.is_empty() {
-                    "frequency".to_string()
-                } else {
-                    column_names_supplied[0].clone()
-                };
-
-                let column = (*column_name).clone();
-
-                if let Value { value: UntaggedValue::Table(start), .. } = datasets.get(0).ok_or_else(|| ShellError::labeled_error("Unable to load dataset", "unabled to load dataset", &name))? {
-                    for percentage in start.iter() {
-
-                        let mut fact = TaggedDictBuilder::new(&name);
-                        let value: Tagged<String> = group_labels.get(idx).ok_or_else(|| ShellError::labeled_error("Unable to load group labels", "unabled to load group labels", &name))?.clone();
-                        fact.insert_value(&column, UntaggedValue::string(value.item).into_value(value.tag));
-
-                        if let Value { value: UntaggedValue::Primitive(Primitive::Int(ref num)), ref tag } = percentage.clone() {
-                            let string = std::iter::repeat("*").take(num.to_i32().ok_or_else(|| ShellError::labeled_error("Expected a number", "expected a number", tag))? as usize).collect::<String>();
-                            fact.insert_untagged(&frequency_column_name, UntaggedValue::string(string));
-                        }
-
-                        idx += 1;
-
-                        yield ReturnSuccess::value(fact.into_value());
-                    }
-                }
-            }
-            _ => {}
-        }
+    let evaluate_with = if let Some(path) = args.get("use") {
+        Some(evaluator(path.as_column_path()?.item))
+    } else {
+        None
     };
 
-    Ok(stream.to_output_stream())
+    let column_grouper = if !columns.is_empty() {
+        match columns.remove(0).split_last() {
+            Some((key, _)) => Some(key.as_string().tagged(&name)),
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let frequency_column_name = if columns.is_empty() {
+        "frequency".to_string()
+    } else if let Some((key, _)) = columns[0].split_last() {
+        key.as_string()
+    } else {
+        "frecuency".to_string()
+    };
+
+    let column = if let Some(ref column) = column_grouper {
+        column.clone()
+    } else {
+        "value".to_string().tagged(&name)
+    };
+
+    let results = nu_data::utils::report(
+        &UntaggedValue::table(&values).into_value(&name),
+        nu_data::utils::Operation {
+            grouper: Some(Box::new(move |_, _| Ok(String::from("frequencies")))),
+            splitter: Some(splitter(column_grouper)),
+            format: &None,
+            eval: &evaluate_with,
+            reduction: &nu_data::utils::Reduction::Count,
+        },
+        &name,
+    )?;
+
+    let labels = results.labels.y.clone();
+    let mut idx = 0;
+
+    Ok(futures::stream::iter(
+        results
+            .data
+            .table_entries()
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .zip(
+                results
+                    .percentages
+                    .table_entries()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter(),
+            )
+            .map(move |(counts, percentages)| {
+                let percentage = percentages
+                    .table_entries()
+                    .cloned()
+                    .last()
+                    .unwrap_or_else(|| {
+                        UntaggedValue::decimal_from_float(0.0, name.span).into_value(&name)
+                    });
+                let value = counts
+                    .table_entries()
+                    .cloned()
+                    .last()
+                    .unwrap_or_else(|| UntaggedValue::int(0).into_value(&name));
+
+                let mut fact = TaggedDictBuilder::new(&name);
+                let column_value = labels
+                    .get(idx)
+                    .ok_or_else(|| {
+                        ShellError::labeled_error(
+                            "Unable to load group labels",
+                            "unabled to load group labels",
+                            &name,
+                        )
+                    })?
+                    .clone();
+
+                fact.insert_value(&column.item, column_value);
+                fact.insert_untagged("count", value);
+
+                let fmt_percentage = format!(
+                    "{}%",
+                    // Some(2) < the number of digits
+                    // true < group the digits
+                    crate::commands::str_::from::action(&percentage, &name, Some(2), true)?
+                        .as_string()?
+                );
+                fact.insert_untagged("percentage", UntaggedValue::string(fmt_percentage));
+
+                let string = std::iter::repeat("*")
+                    .take(percentage.as_u64().map_err(|_| {
+                        ShellError::labeled_error("expected a number", "expected a number", &name)
+                    })? as usize)
+                    .collect::<String>();
+
+                fact.insert_untagged(&frequency_column_name, UntaggedValue::string(string));
+
+                idx += 1;
+
+                ReturnSuccess::value(fact.into_value())
+            }),
+    )
+    .to_output_stream())
 }
 
-fn percentages(values: &Value, max: Value, tag: impl Into<Tag>) -> Result<Value, ShellError> {
-    let tag = tag.into();
+fn evaluator(by: ColumnPath) -> Box<dyn Fn(usize, &Value) -> Result<Value, ShellError> + Send> {
+    Box::new(move |_: usize, value: &Value| {
+        let path = by.clone();
 
-    let results: Value = match values {
-        Value {
-            value: UntaggedValue::Table(datasets),
-            ..
-        } => {
-            let datasets: Vec<_> = datasets
-                .iter()
-                .map(|subsets| match subsets {
-                    Value {
-                        value: UntaggedValue::Table(data),
-                        ..
-                    } => {
-                        let data = data
-                            .iter()
-                            .map(|d| match d {
-                                Value {
-                                    value: UntaggedValue::Primitive(Primitive::Int(n)),
-                                    ..
-                                } => {
-                                    let max = match &max {
-                                        Value {
-                                            value: UntaggedValue::Primitive(Primitive::Int(maxima)),
-                                            ..
-                                        } => maxima.clone(),
-                                        _ => Zero::zero(),
-                                    };
+        let eval = nu_value_ext::get_data_by_column_path(value, &path, move |_, _, error| error);
 
-                                    let n = (n * 100) / max;
-
-                                    UntaggedValue::int(n).into_value(&tag)
-                                }
-                                _ => UntaggedValue::int(0).into_value(&tag),
-                            })
-                            .collect::<Vec<_>>();
-                        UntaggedValue::Table(data).into_value(&tag)
-                    }
-                    _ => UntaggedValue::Table(vec![]).into_value(&tag),
-                })
-                .collect();
-
-            UntaggedValue::Table(datasets).into_value(&tag)
+        match eval {
+            Ok(with_value) => Ok(with_value),
+            Err(reason) => Err(reason),
         }
-        other => other.clone(),
-    };
+    })
+}
 
-    Ok(results)
+fn splitter(
+    by: Option<Tagged<String>>,
+) -> Box<dyn Fn(usize, &Value) -> Result<String, ShellError> + Send> {
+    match by {
+        Some(column) => Box::new(move |_, row: &Value| {
+            let key = &column;
+
+            match row.get_data_by_key(key.borrow_spanned()) {
+                Some(key) => nu_value_ext::as_string(&key),
+                None => Err(ShellError::labeled_error(
+                    "unknown column",
+                    "unknown column",
+                    key.tag(),
+                )),
+            }
+        }),
+        None => Box::new(move |_, row: &Value| nu_value_ext::as_string(&row)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Histogram;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Histogram {})?)
+    }
 }

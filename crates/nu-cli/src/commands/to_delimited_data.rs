@@ -115,8 +115,8 @@ pub fn clone_tagged_value(v: &Value) -> Value {
         UntaggedValue::Primitive(Primitive::Path(x)) => {
             UntaggedValue::Primitive(Primitive::Path(x.clone()))
         }
-        UntaggedValue::Primitive(Primitive::Bytes(b)) => {
-            UntaggedValue::Primitive(Primitive::Bytes(*b))
+        UntaggedValue::Primitive(Primitive::Filesize(b)) => {
+            UntaggedValue::Primitive(Primitive::Filesize(*b))
         }
         UntaggedValue::Primitive(Primitive::Date(d)) => {
             UntaggedValue::Primitive(Primitive::Date(*d))
@@ -134,12 +134,13 @@ fn to_string_tagged_value(v: &Value) -> Result<String, ShellError> {
     match &v.value {
         UntaggedValue::Primitive(Primitive::String(_))
         | UntaggedValue::Primitive(Primitive::Line(_))
-        | UntaggedValue::Primitive(Primitive::Bytes(_))
+        | UntaggedValue::Primitive(Primitive::Filesize(_))
         | UntaggedValue::Primitive(Primitive::Boolean(_))
         | UntaggedValue::Primitive(Primitive::Decimal(_))
         | UntaggedValue::Primitive(Primitive::Path(_))
         | UntaggedValue::Primitive(Primitive::Int(_)) => as_string(v),
         UntaggedValue::Primitive(Primitive::Date(d)) => Ok(d.to_string()),
+        UntaggedValue::Primitive(Primitive::Nothing) => Ok(String::new()),
         UntaggedValue::Table(_) => Ok(String::from("[Table]")),
         UntaggedValue::Row(_) => Ok(String::from("[Row]")),
         _ => Err(ShellError::labeled_error(
@@ -164,51 +165,60 @@ fn merge_descriptors(values: &[Value]) -> Vec<Spanned<String>> {
     ret
 }
 
-pub fn to_delimited_data(
+pub async fn to_delimited_data(
     headerless: bool,
     sep: char,
     format_name: &'static str,
-    RunnableContext { input, name, .. }: RunnableContext,
+    input: InputStream,
+    name: Tag,
 ) -> Result<OutputStream, ShellError> {
     let name_tag = name;
     let name_span = name_tag.span;
 
-    let stream = async_stream! {
-         let input: Vec<Value> = input.values.collect().await;
+    let input: Vec<Value> = input.collect().await;
 
-         let to_process_input = if input.len() > 1 {
-             let tag = input[0].tag.clone();
-             vec![Value { value: UntaggedValue::Table(input), tag } ]
-         } else if input.len() == 1 {
-             input
-         } else {
-             vec![]
-         };
-
-         for value in to_process_input {
-             match from_value_to_delimited_string(&clone_tagged_value(&value), sep) {
-                 Ok(x) => {
-                     let converted = if headerless {
-                         x.lines().skip(1).collect()
-                     } else {
-                         x
-                     };
-                     yield ReturnSuccess::value(UntaggedValue::Primitive(Primitive::String(converted)).into_value(&name_tag))
-                 }
-                 Err(x) => {
-                     let expected = format!("Expected a table with {}-compatible structure from pipeline", format_name);
-                     let requires = format!("requires {}-compatible input", format_name);
-                     yield Err(ShellError::labeled_error_with_secondary(
-                         expected,
-                         requires,
-                         name_span,
-                         "originates from here".to_string(),
-                         value.tag.span,
-                     ))
-                 }
-             }
-         }
+    let to_process_input = match input.len() {
+        x if x > 1 => {
+            let tag = input[0].tag.clone();
+            vec![Value {
+                value: UntaggedValue::Table(input),
+                tag,
+            }]
+        }
+        1 => input,
+        _ => vec![],
     };
 
-    Ok(stream.to_output_stream())
+    Ok(
+        futures::stream::iter(to_process_input.into_iter().map(move |value| {
+            match from_value_to_delimited_string(&clone_tagged_value(&value), sep) {
+                Ok(mut x) => {
+                    if headerless {
+                        if let Some(second_line) = x.find('\n') {
+                            let start = second_line + 1;
+                            x.replace_range(0..start, "");
+                        }
+                    }
+                    ReturnSuccess::value(
+                        UntaggedValue::Primitive(Primitive::String(x)).into_value(&name_tag),
+                    )
+                }
+                Err(_) => {
+                    let expected = format!(
+                        "Expected a table with {}-compatible structure from pipeline",
+                        format_name
+                    );
+                    let requires = format!("requires {}-compatible input", format_name);
+                    Err(ShellError::labeled_error_with_secondary(
+                        expected,
+                        requires,
+                        name_span,
+                        "originates from here".to_string(),
+                        value.tag.span,
+                    ))
+                }
+            }
+        }))
+        .to_output_stream(),
+    )
 }

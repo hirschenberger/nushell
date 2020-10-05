@@ -249,10 +249,7 @@ impl DebugDocBuilder {
     }
 
     pub fn option(builder: Option<DebugDocBuilder>) -> DebugDocBuilder {
-        match builder {
-            None => DebugDocBuilder::blank(),
-            Some(b) => b,
-        }
+        builder.unwrap_or_else(DebugDocBuilder::blank)
     }
 
     pub fn space() -> DebugDocBuilder {
@@ -264,10 +261,7 @@ impl DebugDocBuilder {
     }
 
     pub fn is_empty(&self) -> bool {
-        match &self.inner.1 {
-            pretty::Doc::Nil => true,
-            _ => false,
-        }
+        matches!(&self.inner.1, pretty::Doc::Nil)
     }
 
     pub fn or(self, doc: DebugDocBuilder) -> DebugDocBuilder {

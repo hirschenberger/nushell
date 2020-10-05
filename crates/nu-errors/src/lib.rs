@@ -1,11 +1,9 @@
 use ansi_term::Color;
 use bigdecimal::BigDecimal;
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 use derive_new::new;
 use getset::Getters;
-use language_reporting::{Diagnostic, Label, Severity};
-use nu_source::{
-    b, DebugDocBuilder, HasFallibleSpan, PrettyDebug, Span, Spanned, SpannedItem, TracableContext,
-};
+use nu_source::{b, DebugDocBuilder, HasFallibleSpan, PrettyDebug, Span, Spanned, SpannedItem};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use serde::{Deserialize, Serialize};
@@ -15,7 +13,7 @@ use std::ops::Range;
 /// A structured reason for a ParseError. Note that parsing in nu is more like macro expansion in
 /// other languages, so the kinds of errors that can occur during parsing are more contextual than
 /// you might expect.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
 pub enum ParseErrorReason {
     /// The parser encountered an EOF rather than what it was expecting
     Eof { expected: String, span: Span },
@@ -40,7 +38,7 @@ pub enum ParseErrorReason {
 }
 
 /// A newtype for `ParseErrorReason`
-#[derive(Debug, Clone, Eq, PartialEq, Getters)]
+#[derive(Debug, Clone, Getters, PartialEq, PartialOrd, Eq, Ord, Hash, Serialize, Deserialize)]
 pub struct ParseError {
     #[get = "pub"]
     reason: ParseErrorReason,
@@ -179,8 +177,8 @@ impl PrettyDebug for ArgumentError {
 /// creating a cause chain.
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Clone, Serialize, Deserialize, Hash)]
 pub struct ShellError {
-    error: ProximateShellError,
-    cause: Option<Box<ShellError>>,
+    pub error: ProximateShellError,
+    pub cause: Option<Box<ShellError>>,
 }
 
 /// `PrettyDebug` is for internal debugging. For user-facing debugging, [into_diagnostic](ShellError::into_diagnostic)
@@ -305,6 +303,9 @@ impl PrettyDebug for ShellError {
             ProximateShellError::UntaggedRuntimeError { reason } => {
                 b::error("Unknown Error") + b::delimit("(", b::description(reason), ")")
             }
+            ProximateShellError::ExternalPlaceholderError => {
+                b::error("non-zero external exit code")
+            }
         }
     }
 }
@@ -344,6 +345,14 @@ impl ShellError {
         ProximateShellError::MissingProperty {
             subpath: subpath.map(|s| s.into()),
             expr: expr.map(|e| e.into()),
+        }
+        .start()
+    }
+
+    pub fn missing_value(span: impl Into<Option<Span>>, reason: impl Into<String>) -> ShellError {
+        ProximateShellError::MissingValue {
+            span: span.into(),
+            reason: reason.into(),
         }
         .start()
     }
@@ -413,106 +422,72 @@ impl ShellError {
         .start()
     }
 
-    pub fn parse_error(
-        error: nom::Err<(
-            nom_locate::LocatedSpanEx<&str, TracableContext>,
-            nom::error::ErrorKind,
-        )>,
-    ) -> ShellError {
-        use language_reporting::*;
-
-        match error {
-            nom::Err::Incomplete(_) => {
-                // TODO: Get span of EOF
-                let diagnostic = Diagnostic::new(
-                    Severity::Error,
-                    "Parse Error: Unexpected end of line".to_string(),
-                );
-
-                ShellError::diagnostic(diagnostic)
-            }
-            nom::Err::Failure(span) | nom::Err::Error(span) => {
-                let diagnostic = Diagnostic::new(Severity::Error, "Parse Error".to_string())
-                    .with_label(Label::new_primary(Span::from(span.0)));
-
-                ShellError::diagnostic(diagnostic)
-            }
-        }
-    }
-
-    pub fn diagnostic(diagnostic: Diagnostic<Span>) -> ShellError {
+    pub fn diagnostic(diagnostic: Diagnostic<usize>) -> ShellError {
         ProximateShellError::Diagnostic(ShellDiagnostic { diagnostic }).start()
     }
 
-    pub fn into_diagnostic(self) -> Diagnostic<Span> {
+    pub fn external_non_zero() -> ShellError {
+        ProximateShellError::ExternalPlaceholderError.start()
+    }
+
+    pub fn into_diagnostic(self) -> Option<Diagnostic<usize>> {
         match self.error {
             ProximateShellError::MissingValue { span, reason } => {
-                let mut d = Diagnostic::new(
-                    Severity::Bug,
-                    format!("Internal Error (missing value) :: {}", reason),
-                );
+                let mut d = Diagnostic::bug().with_message(format!("Internal Error (missing value) :: {}", reason));
 
                 if let Some(span) = span {
-                    d = d.with_label(Label::new_primary(span));
+                    d = d.with_labels(vec![Label::primary(0, span)]);
                 }
 
-                d
+                Some(d)
             }
             ProximateShellError::ArgumentError {
                 command,
                 error,
-            } => match error {
-                ArgumentError::InvalidExternalWord => Diagnostic::new(
-                    Severity::Error,
-                    "Invalid bare word for Nu command (did you intend to invoke an external command?)".to_string())
-                .with_label(Label::new_primary(command.span)),
-                ArgumentError::UnexpectedArgument(argument) => Diagnostic::new(
-                    Severity::Error,
+            } => Some(match error {
+                ArgumentError::InvalidExternalWord => Diagnostic::error().with_message("Invalid bare word for Nu command (did you intend to invoke an external command?)")
+                .with_labels(vec![Label::primary(0, command.span)]),
+                ArgumentError::UnexpectedArgument(argument) => Diagnostic::error().with_message(
                     format!(
                         "{} unexpected {}",
                         Color::Cyan.paint(&command.item),
                         Color::Green.bold().paint(&argument.item)
-                    ),
+                    )
                 )
-                .with_label(
-                    Label::new_primary(argument.span).with_message(
-                        format!("unexpected argument (try {} -h)", &command.item))
+                .with_labels(
+                    vec![Label::primary(0, argument.span).with_message(
+                        format!("unexpected argument (try {} -h)", &command.item))]
                 ),
-                ArgumentError::UnexpectedFlag(flag) => Diagnostic::new(
-                    Severity::Error,
+                ArgumentError::UnexpectedFlag(flag) => Diagnostic::error().with_message(
                     format!(
                         "{} unexpected {}",
                         Color::Cyan.paint(&command.item),
                         Color::Green.bold().paint(&flag.item)
                     ),
                 )
-                .with_label(
-                    Label::new_primary(flag.span).with_message(
+                .with_labels(vec![
+                    Label::primary(0, flag.span).with_message(
                     format!("unexpected flag (try {} -h)", &command.item))
-                    ),
-                ArgumentError::MissingMandatoryFlag(name) => Diagnostic::new(
-                    Severity::Error,
-                    format!(
+                    ]),
+                ArgumentError::MissingMandatoryFlag(name) => Diagnostic::error().with_message(                    format!(
                         "{} requires {}{}",
                         Color::Cyan.paint(&command.item),
                         Color::Green.bold().paint("--"),
                         Color::Green.bold().paint(name)
                     ),
                 )
-                .with_label(Label::new_primary(command.span)),
-                ArgumentError::MissingMandatoryPositional(name) => Diagnostic::new(
-                    Severity::Error,
+                .with_labels(vec![Label::primary(0, command.span)]),
+                ArgumentError::MissingMandatoryPositional(name) => Diagnostic::error().with_message(
                     format!(
                         "{} requires {} parameter",
                         Color::Cyan.paint(&command.item),
                         Color::Green.bold().paint(name.clone())
                     ),
                 )
-                .with_label(
-                    Label::new_primary(command.span).with_message(format!("requires {} parameter", name)),
+                .with_labels(
+                    vec![Label::primary(0, command.span).with_message(format!("requires {} parameter", name))],
                 ),
-                ArgumentError::MissingValueForName(name) => Diagnostic::new(
-                    Severity::Error,
+                ArgumentError::MissingValueForName(name) => Diagnostic::error().with_message(
                     format!(
                         "{} is missing value for flag {}{}",
                         Color::Cyan.paint(&command.item),
@@ -520,8 +495,8 @@ impl ShellError {
                         Color::Green.bold().paint(name)
                     ),
                 )
-                .with_label(Label::new_primary(command.span)),
-            },
+                .with_labels(vec![Label::primary(0, command.span)]),
+            }),
             ProximateShellError::TypeError {
                 expected,
                 actual:
@@ -529,9 +504,9 @@ impl ShellError {
                         item: Some(actual),
                         span,
                     },
-            } => Diagnostic::new(Severity::Error, "Type Error").with_label(
-                Label::new_primary(span)
-                    .with_message(format!("Expected {}, found {}", expected, actual)),
+            } => Some(Diagnostic::error().with_message("Type Error").with_labels(
+                vec![Label::primary(0, span)
+                    .with_message(format!("Expected {}, found {}", expected, actual))]),
             ),
             ProximateShellError::TypeError {
                 expected,
@@ -540,13 +515,13 @@ impl ShellError {
                         item: None,
                         span
                     },
-            } => Diagnostic::new(Severity::Error, "Type Error")
-                .with_label(Label::new_primary(span).with_message(expected)),
+            } => Some(Diagnostic::error().with_message("Type Error")
+                .with_labels(vec![Label::primary(0, span).with_message(expected)])),
 
             ProximateShellError::UnexpectedEof {
                 expected, span
-            } => Diagnostic::new(Severity::Error, "Unexpected end of input".to_string())
-                .with_label(Label::new_primary(span).with_message(format!("Expected {}", expected))),
+            } => Some(Diagnostic::error().with_message("Unexpected end of input")
+                .with_labels(vec![Label::primary(0, span).with_message(format!("Expected {}", expected))])),
 
             ProximateShellError::RangeError {
                 kind,
@@ -556,13 +531,13 @@ impl ShellError {
                         item,
                         span
                     },
-            } => Diagnostic::new(Severity::Error, "Range Error").with_label(
-                Label::new_primary(span).with_message(format!(
+            } => Some(Diagnostic::error().with_message("Range Error").with_labels(
+                vec![Label::primary(0, span).with_message(format!(
                     "Expected to convert {} to {} while {}, but it was out of range",
                     item,
                     kind.display(),
                     operation
-                )),
+                ))]),
             ),
 
             ProximateShellError::SyntaxError {
@@ -571,52 +546,56 @@ impl ShellError {
                         span,
                         item
                     },
-            } => Diagnostic::new(Severity::Error, "Syntax Error")
-                .with_label(Label::new_primary(span).with_message(item)),
+            } => Some(Diagnostic::error().with_message("Syntax Error")
+                .with_labels(vec![Label::primary(0, span).with_message(item)])),
 
             ProximateShellError::MissingProperty { subpath, expr, .. } => {
 
-                let mut diag = Diagnostic::new(Severity::Error, "Missing property");
+                let mut diag = Diagnostic::error().with_message("Missing property");
 
                 if subpath.span == Span::unknown() {
                     diag.message = format!("Missing property (for {})", subpath.item);
                 } else {
-                    let subpath = Label::new_primary(subpath.span).with_message(subpath.item);
-                    diag = diag.with_label(subpath);
+                    let subpath = Label::primary(0, subpath.span).with_message(subpath.item);
+                    let mut labels = vec![];
+
+                    labels.push(subpath);
 
                     if expr.span != Span::unknown() {
-                        let expr = Label::new_primary(expr.span).with_message(expr.item);
-                        diag = diag.with_label(expr)
+                        let expr = Label::primary(0, expr.span).with_message(expr.item);
+                        labels.push(expr);
                     }
-
+                    diag = diag.with_labels(labels);
                 }
 
-                diag
+                Some(diag)
             }
 
             ProximateShellError::InvalidIntegerIndex { subpath,integer } => {
-                let mut diag = Diagnostic::new(Severity::Error, "Invalid integer property");
-
+                let mut diag = Diagnostic::error().with_message("Invalid integer property");
+                let mut labels = vec![];
                 if subpath.span == Span::unknown() {
                     diag.message = format!("Invalid integer property (for {})", subpath.item)
                 } else {
-                    let label = Label::new_primary(subpath.span).with_message(subpath.item);
-                    diag = diag.with_label(label)
+                    let label = Label::primary(0, subpath.span).with_message(subpath.item);
+                    labels.push(label);
                 }
 
-                diag = diag.with_label(Label::new_secondary(integer).with_message("integer"));
+                labels.push(Label::secondary(0, integer).with_message("integer"));
+                diag = diag.with_labels(labels);
 
-                diag
+                Some(diag)
             }
 
-            ProximateShellError::Diagnostic(diag) => diag.diagnostic,
+            ProximateShellError::Diagnostic(diag) => Some(diag.diagnostic),
             ProximateShellError::CoerceError { left, right } => {
-                Diagnostic::new(Severity::Error, "Coercion error")
-                    .with_label(Label::new_primary(left.span).with_message(left.item))
-                    .with_label(Label::new_secondary(right.span).with_message(right.item))
+                Some(Diagnostic::error().with_message("Coercion error")
+                    .with_labels(vec![Label::primary(0, left.span).with_message(left.item),
+                    Label::secondary(0, right.span).with_message(right.item)]))
             }
 
-            ProximateShellError::UntaggedRuntimeError { reason } => Diagnostic::new(Severity::Error, format!("Error: {}", reason))
+            ProximateShellError::UntaggedRuntimeError { reason } => Some(Diagnostic::error().with_message(format!("Error: {}", reason))),
+            ProximateShellError::ExternalPlaceholderError => None,
         }
     }
 
@@ -626,8 +605,11 @@ impl ShellError {
         span: impl Into<Span>,
     ) -> ShellError {
         ShellError::diagnostic(
-            Diagnostic::new(Severity::Error, msg.into())
-                .with_label(Label::new_primary(span.into()).with_message(label.into())),
+            Diagnostic::error()
+                .with_message(msg.into())
+                .with_labels(vec![
+                    Label::primary(0, span.into()).with_message(label.into())
+                ]),
         )
     }
 
@@ -639,14 +621,12 @@ impl ShellError {
         secondary_span: impl Into<Span>,
     ) -> ShellError {
         ShellError::diagnostic(
-            Diagnostic::new_error(msg.into())
-                .with_label(
-                    Label::new_primary(primary_span.into()).with_message(primary_label.into()),
-                )
-                .with_label(
-                    Label::new_secondary(secondary_span.into())
-                        .with_message(secondary_label.into()),
-                ),
+            Diagnostic::error()
+                .with_message(msg.into())
+                .with_labels(vec![
+                    Label::primary(0, primary_span.into()).with_message(primary_label.into()),
+                    Label::secondary(0, secondary_span.into()).with_message(secondary_label.into()),
+                ]),
         )
     }
 
@@ -762,6 +742,7 @@ pub enum ProximateShellError {
     UntaggedRuntimeError {
         reason: String,
     },
+    ExternalPlaceholderError,
 }
 
 impl ProximateShellError {
@@ -793,13 +774,14 @@ impl HasFallibleSpan for ProximateShellError {
             ProximateShellError::Diagnostic(_) => return None,
             ProximateShellError::CoerceError { left, right } => left.span.until(right.span),
             ProximateShellError::UntaggedRuntimeError { .. } => return None,
+            ProximateShellError::ExternalPlaceholderError => return None,
         })
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellDiagnostic {
-    pub(crate) diagnostic: Diagnostic<Span>,
+    pub diagnostic: Diagnostic<usize>,
 }
 
 impl std::hash::Hash for ShellDiagnostic {
@@ -809,11 +791,11 @@ impl std::hash::Hash for ShellDiagnostic {
         self.diagnostic.message.hash(state);
 
         for label in &self.diagnostic.labels {
-            label.span.hash(state);
+            label.range.hash(state);
             label.message.hash(state);
             match label.style {
-                language_reporting::LabelStyle::Primary => 0.hash(state),
-                language_reporting::LabelStyle::Secondary => 1.hash(state),
+                codespan_reporting::diagnostic::LabelStyle::Primary => 0.hash(state),
+                codespan_reporting::diagnostic::LabelStyle::Secondary => 1.hash(state),
             }
         }
     }
@@ -859,6 +841,18 @@ impl std::convert::From<std::io::Error> for ShellError {
     }
 }
 
+impl std::convert::From<std::string::FromUtf8Error> for ShellError {
+    fn from(input: std::string::FromUtf8Error) -> ShellError {
+        ShellError::untagged_runtime_error(format!("{}", input))
+    }
+}
+
+impl std::convert::From<std::str::Utf8Error> for ShellError {
+    fn from(input: std::str::Utf8Error) -> ShellError {
+        ShellError::untagged_runtime_error(format!("{}", input))
+    }
+}
+
 impl std::convert::From<serde_yaml::Error> for ShellError {
     fn from(input: serde_yaml::Error) -> ShellError {
         ShellError::untagged_runtime_error(format!("{:?}", input))
@@ -883,6 +877,12 @@ impl std::convert::From<Box<dyn std::error::Error + Send + Sync>> for ShellError
     }
 }
 
+impl std::convert::From<glob::PatternError> for ShellError {
+    fn from(input: glob::PatternError) -> ShellError {
+        ShellError::untagged_runtime_error(format!("{:?}", input))
+    }
+}
+
 pub trait CoerceInto<U> {
     fn coerce_into(self, operation: impl Into<String>) -> Result<U, ShellError>;
 }
@@ -901,27 +901,25 @@ macro_rules! ranged_int {
 
         impl CoerceInto<$ty> for nu_source::Tagged<BigInt> {
             fn coerce_into(self, operation: impl Into<String>) -> Result<$ty, ShellError> {
-                match self.$op() {
-                    Some(v) => Ok(v),
-                    None => Err(ShellError::range_error(
+                self.$op().ok_or_else(|| {
+                    ShellError::range_error(
                         $ty::to_expected_range(),
                         &self.item.spanned(self.tag.span),
                         operation.into(),
-                    )),
-                }
+                    )
+                })
             }
         }
 
         impl CoerceInto<$ty> for nu_source::Tagged<&BigInt> {
             fn coerce_into(self, operation: impl Into<String>) -> Result<$ty, ShellError> {
-                match self.$op() {
-                    Some(v) => Ok(v),
-                    None => Err(ShellError::range_error(
+                self.$op().ok_or_else(|| {
+                    ShellError::range_error(
                         $ty::to_expected_range(),
                         &self.item.spanned(self.tag.span),
                         operation.into(),
-                    )),
-                }
+                    )
+                })
             }
         }
     };
@@ -946,27 +944,25 @@ macro_rules! ranged_decimal {
 
         impl CoerceInto<$ty> for nu_source::Tagged<BigDecimal> {
             fn coerce_into(self, operation: impl Into<String>) -> Result<$ty, ShellError> {
-                match self.$op() {
-                    Some(v) => Ok(v),
-                    None => Err(ShellError::range_error(
+                self.$op().ok_or_else(|| {
+                    ShellError::range_error(
                         $ty::to_expected_range(),
                         &self.item.spanned(self.tag.span),
                         operation.into(),
-                    )),
-                }
+                    )
+                })
             }
         }
 
         impl CoerceInto<$ty> for nu_source::Tagged<&BigDecimal> {
             fn coerce_into(self, operation: impl Into<String>) -> Result<$ty, ShellError> {
-                match self.$op() {
-                    Some(v) => Ok(v),
-                    None => Err(ShellError::range_error(
+                self.$op().ok_or_else(|| {
+                    ShellError::range_error(
                         $ty::to_expected_range(),
                         &self.item.spanned(self.tag.span),
                         operation.into(),
-                    )),
-                }
+                    )
+                })
             }
         }
     };

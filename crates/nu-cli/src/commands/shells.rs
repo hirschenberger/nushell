@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 pub struct Shells;
 
+#[async_trait]
 impl WholeStreamCommand for Shells {
     fn name(&self) -> &str {
         "shells"
@@ -19,7 +20,7 @@ impl WholeStreamCommand for Shells {
         "Display the list of current shells."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
@@ -36,9 +37,9 @@ fn shells(args: CommandArgs, _registry: &CommandRegistry) -> Result<OutputStream
         let mut dict = TaggedDictBuilder::new(&tag);
 
         if index == (*args.shell_manager.current_shell).load(Ordering::SeqCst) {
-            dict.insert_untagged(" ", "X".to_string());
+            dict.insert_untagged("active", true);
         } else {
-            dict.insert_untagged(" ", " ".to_string());
+            dict.insert_untagged("active", false);
         }
         dict.insert_untagged("name", shell.name());
         dict.insert_untagged("path", shell.path());
@@ -47,4 +48,17 @@ fn shells(args: CommandArgs, _registry: &CommandRegistry) -> Result<OutputStream
     }
 
     Ok(shells_out.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellError;
+    use super::Shells;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Shells {})?)
+    }
 }

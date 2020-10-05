@@ -2,7 +2,7 @@ use crate::commands::to_delimited_data::to_delimited_data;
 use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{Primitive, Signature, UntaggedValue, Value};
+use nu_protocol::{Primitive, Signature, SyntaxShape, UntaggedValue, Value};
 
 pub struct ToCSV;
 
@@ -12,39 +12,50 @@ pub struct ToCSVArgs {
     separator: Option<Value>,
 }
 
+#[async_trait]
 impl WholeStreamCommand for ToCSV {
     fn name(&self) -> &str {
-        "to-csv"
+        "to csv"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("to-csv").switch(
-            "headerless",
-            "do not output the columns names as the first row",
-            None,
-        )
+        Signature::build("to csv")
+            .named(
+                "separator",
+                SyntaxShape::String,
+                "a character to separate columns, defaults to ','",
+                Some('s'),
+            )
+            .switch(
+                "headerless",
+                "do not output the columns names as the first row",
+                None,
+            )
     }
 
     fn usage(&self) -> &str {
         "Convert table into .csv text "
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, to_csv)?.run()
+        to_csv(args, registry).await
     }
 }
 
-fn to_csv(
-    ToCSVArgs {
-        separator,
-        headerless,
-    }: ToCSVArgs,
-    runnable_context: RunnableContext,
-) -> Result<OutputStream, ShellError> {
+async fn to_csv(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+    let (
+        ToCSVArgs {
+            separator,
+            headerless,
+        },
+        input,
+    ) = args.process(&registry).await?;
     let sep = match separator {
         Some(Value {
             value: UntaggedValue::Primitive(Primitive::String(s)),
@@ -68,5 +79,18 @@ fn to_csv(
         _ => ',',
     };
 
-    to_delimited_data(headerless, sep, "CSV", runnable_context)
+    to_delimited_data(headerless, sep, "CSV", input, name).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ShellError;
+    use super::ToCSV;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(ToCSV {})?)
+    }
 }

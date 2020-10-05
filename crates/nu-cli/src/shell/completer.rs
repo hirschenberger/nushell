@@ -1,154 +1,159 @@
-use crate::context::CommandRegistry;
+use crate::completion::command::CommandCompleter;
+use crate::completion::flag::FlagCompleter;
+use crate::completion::matchers;
+use crate::completion::matchers::Matcher;
+use crate::completion::path::{PathCompleter, PathSuggestion};
+use crate::completion::{self, Completer, Suggestion};
+use crate::evaluation_context::EvaluationContext;
+use nu_source::Tag;
 
-use derive_new::new;
-use nu_parser::ExpandContext;
-use nu_source::{HasSpan, Text};
-use rustyline::completion::{Completer, FilenameCompleter};
-use std::path::PathBuf;
+use std::borrow::Cow;
 
-#[derive(new)]
-pub(crate) struct NuCompleter {
-    pub file_completer: FilenameCompleter,
-    pub commands: CommandRegistry,
-    pub homedir: Option<PathBuf>,
-}
+pub(crate) struct NuCompleter {}
+
+impl NuCompleter {}
 
 impl NuCompleter {
     pub fn complete(
         &self,
         line: &str,
         pos: usize,
-        context: &rustyline::Context,
-    ) -> rustyline::Result<(usize, Vec<rustyline::completion::Pair>)> {
-        let text = Text::from(line);
-        let expand_context =
-            ExpandContext::new(Box::new(self.commands.clone()), &text, self.homedir.clone());
+        context: &completion::CompletionContext,
+    ) -> (usize, Vec<Suggestion>) {
+        use completion::engine::LocationType;
 
-        #[allow(unused)]
-        // smarter completions
-        let shapes = nu_parser::pipeline_shapes(line, expand_context);
-
-        let commands: Vec<String> = self.commands.names();
-
-        let line_chars: Vec<_> = line[..pos].chars().collect();
-
-        let mut replace_pos = line_chars.len();
-        while replace_pos > 0 {
-            if line_chars[replace_pos - 1] == ' ' {
-                break;
-            }
-            replace_pos -= 1;
-        }
-
-        let mut completions;
-
-        // See if we're a flag
-        if pos > 0 && replace_pos < line_chars.len() && line_chars[replace_pos] == '-' {
-            completions = self.get_matching_arguments(&line_chars, line, replace_pos, pos);
-        } else {
-            completions = self.file_completer.complete(line, pos, context)?.1;
-
-            for completion in &mut completions {
-                if completion.replacement.contains("\\ ") {
-                    completion.replacement = completion.replacement.replace("\\ ", " ");
-                }
-                if completion.replacement.contains("\\(") {
-                    completion.replacement = completion.replacement.replace("\\(", "(");
-                }
-
-                if completion.replacement.contains(' ') || completion.replacement.contains('(') {
-                    if !completion.replacement.starts_with('\"') {
-                        completion.replacement = format!("\"{}", completion.replacement);
-                    }
-                    if !completion.replacement.ends_with('\"') {
-                        completion.replacement = format!("{}\"", completion.replacement);
-                    }
-                }
-            }
+        let nu_context: &EvaluationContext = context.as_ref();
+        let lite_block = match nu_parser::lite_parse(line, 0) {
+            Ok(block) => Some(block),
+            Err(result) => result.partial,
         };
 
-        for command in commands.iter() {
-            let mut pos = replace_pos;
-            let mut matched = true;
-            if pos < line_chars.len() {
-                for chr in command.chars() {
-                    if line_chars[pos] != chr {
-                        matched = false;
-                        break;
-                    }
-                    pos += 1;
-                    if pos == line_chars.len() {
-                        break;
-                    }
-                }
-            }
+        let locations = lite_block
+            .map(|block| nu_parser::classify_block(&block, &nu_context.registry))
+            .map(|block| completion::engine::completion_location(line, &block.block, pos))
+            .unwrap_or_default();
 
-            if matched {
-                completions.push(rustyline::completion::Pair {
-                    display: command.clone(),
-                    replacement: command.clone(),
-                });
-            }
+        let matcher = nu_data::config::config(Tag::unknown())
+            .ok()
+            .and_then(|cfg| cfg.get("line_editor").cloned())
+            .and_then(|le| {
+                le.row_entries()
+                    .find(|(idx, _value)| idx.as_str() == "completion_match_method")
+                    .and_then(|(_idx, value)| value.as_string().ok())
+            })
+            .unwrap_or_else(String::new);
+
+        let matcher = matcher.as_str();
+        let matcher: &dyn Matcher = match matcher {
+            "case-insensitive" => &matchers::case_insensitive::Matcher,
+            _ => &matchers::case_sensitive::Matcher,
+        };
+
+        if locations.is_empty() {
+            (pos, Vec::new())
+        } else {
+            let pos = locations[0].span.start();
+            let suggestions = locations
+                .into_iter()
+                .flat_map(|location| {
+                    let partial = location.span.slice(line);
+                    match location.item {
+                        LocationType::Command => {
+                            let command_completer = CommandCompleter;
+                            command_completer.complete(context, partial, matcher.to_owned())
+                        }
+
+                        LocationType::Flag(cmd) => {
+                            let flag_completer = FlagCompleter { cmd };
+                            flag_completer.complete(context, partial, matcher.to_owned())
+                        }
+
+                        LocationType::Argument(cmd, _arg_name) => {
+                            let path_completer = PathCompleter;
+
+                            const QUOTE_CHARS: &[char] = &['\'', '"', '`'];
+
+                            // TODO Find a better way to deal with quote chars. Can the completion
+                            //      engine relay this back to us? Maybe have two spans: inner and
+                            //      outer. The former is what we want to complete, the latter what
+                            //      we'd need to replace.
+                            let (quote_char, partial) = if partial.starts_with(QUOTE_CHARS) {
+                                let (head, tail) = partial.split_at(1);
+                                (Some(head), tail)
+                            } else {
+                                (None, partial)
+                            };
+
+                            let partial = if let Some(quote_char) = quote_char {
+                                if partial.ends_with(quote_char) {
+                                    &partial[..partial.len() - 1]
+                                } else {
+                                    partial
+                                }
+                            } else {
+                                partial
+                            };
+
+                            let completed_paths = path_completer.path_suggestions(partial, matcher);
+                            match cmd.as_deref().unwrap_or("") {
+                                "cd" => select_directory_suggestions(completed_paths),
+                                _ => completed_paths,
+                            }
+                            .into_iter()
+                            .map(|s| Suggestion {
+                                replacement: requote(s.suggestion.replacement),
+                                display: s.suggestion.display,
+                            })
+                            .collect()
+                        }
+
+                        LocationType::Variable => Vec::new(),
+                    }
+                })
+                .collect();
+
+            (pos, suggestions)
         }
+    }
+}
 
-        Ok((replace_pos, completions))
+fn select_directory_suggestions(completed_paths: Vec<PathSuggestion>) -> Vec<PathSuggestion> {
+    completed_paths
+        .into_iter()
+        .filter(|suggestion| {
+            suggestion
+                .path
+                .metadata()
+                .map(|md| md.is_dir())
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn requote(orig_value: String) -> String {
+    let value: Cow<str> = rustyline::completion::unescape(&orig_value, Some('\\'));
+
+    let mut quotes = vec!['"', '\'', '`'];
+    let mut should_quote = false;
+    for c in value.chars() {
+        if c.is_whitespace() {
+            should_quote = true;
+        } else if let Some(index) = quotes.iter().position(|q| *q == c) {
+            should_quote = true;
+            quotes.swap_remove(index);
+        }
     }
 
-    fn get_matching_arguments(
-        &self,
-        line_chars: &[char],
-        line: &str,
-        replace_pos: usize,
-        pos: usize,
-    ) -> Vec<rustyline::completion::Pair> {
-        let mut matching_arguments = vec![];
-
-        let mut line_copy = line.to_string();
-        let substring = line_chars[replace_pos..pos].iter().collect::<String>();
-        let replace_string = (replace_pos..pos).map(|_| " ").collect::<String>();
-        line_copy.replace_range(replace_pos..pos, &replace_string);
-
-        if let Ok(val) = nu_parser::parse(&line_copy) {
-            let source = Text::from(line);
-            let pipeline_list = vec![val.clone()];
-
-            let expand_context = nu_parser::ExpandContext {
-                homedir: None,
-                registry: Box::new(self.commands.clone()),
-                source: &source,
-            };
-
-            let mut iterator =
-                nu_parser::TokensIterator::new(&pipeline_list, expand_context, val.span());
-
-            let result = iterator.expand_infallible(nu_parser::PipelineShape);
-
-            if result.failed.is_none() {
-                for command in result.commands.list {
-                    if let nu_parser::ClassifiedCommand::Internal(nu_parser::InternalCommand {
-                        args,
-                        ..
-                    }) = command
-                    {
-                        if replace_pos >= args.span.start() && replace_pos <= args.span.end() {
-                            if let Some(named) = args.named {
-                                for (name, _) in named.iter() {
-                                    let full_flag = format!("--{}", name);
-
-                                    if full_flag.starts_with(&substring) {
-                                        matching_arguments.push(rustyline::completion::Pair {
-                                            display: full_flag.clone(),
-                                            replacement: full_flag,
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    if should_quote {
+        if quotes.is_empty() {
+            // TODO we don't really have an escape character, so there isn't a great option right
+            //      now. One possibility is `{{$(char backtick)}}`
+            value.to_string()
+        } else {
+            let quote = quotes[0];
+            format!("{}{}{}", quote, value, quote)
         }
-
-        matching_arguments
+    } else {
+        value.to_string()
     }
 }

@@ -1,16 +1,16 @@
 [package]
-name = "nu"
-version = "0.11.0"
-authors = ["Yehuda Katz <wycats@gmail.com>", "Jonathan Turner <jonathan.d.turner@gmail.com>", "Andrés N. Robalino <andres@androbtech.com>"]
-description = "A shell for the GitHub era"
-license = "MIT"
-edition = "2018"
-readme = "README.md"
+authors = ["The Nu Project Contributors"]
 default-run = "nu"
-repository = "https://github.com/nushell/nushell"
-homepage = "https://www.nushell.sh"
+description = "A new type of shell"
 documentation = "https://www.nushell.sh/book/"
+edition = "2018"
 exclude = ["images"]
+homepage = "https://www.nushell.sh"
+license = "MIT"
+name = "nu"
+readme = "README.md"
+repository = "https://github.com/nushell/nushell"
+version = "0.20.0"
 
 [workspace]
 members = ["crates/*/"]
@@ -18,100 +18,100 @@ members = ["crates/*/"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nu-cli = { version = "0.11.0", path = "./crates/nu-cli" }
-nu-source = { version = "0.11.0", path = "./crates/nu-source" }
-nu-plugin = { version = "0.11.0", path = "./crates/nu-plugin" }
-nu-protocol = { version = "0.11.0", path = "./crates/nu-protocol" }
-nu-errors = { version = "0.11.0", path = "./crates/nu-errors" }
-nu-parser = { version = "0.11.0", path = "./crates/nu-parser" }
-nu-value-ext = { version = "0.11.0", path = "./crates/nu-value-ext" }
-nu_plugin_average = { version = "0.11.0", path = "./crates/nu_plugin_average", optional=true }
-nu_plugin_binaryview = { version = "0.11.0", path = "./crates/nu_plugin_binaryview", optional=true }
-nu_plugin_fetch = { version = "0.11.0", path = "./crates/nu_plugin_fetch", optional=true }
-nu_plugin_inc = { version = "0.11.0", path = "./crates/nu_plugin_inc", optional=true }
-nu_plugin_match = { version = "0.11.0", path = "./crates/nu_plugin_match", optional=true }
-nu_plugin_post = { version = "0.11.0", path = "./crates/nu_plugin_post", optional=true }
-nu_plugin_ps = { version = "0.11.0", path = "./crates/nu_plugin_ps", optional=true }
-nu_plugin_str = { version = "0.11.0", path = "./crates/nu_plugin_str", optional=true }
-nu_plugin_sum = { version = "0.11.0", path = "./crates/nu_plugin_sum", optional=true }
-nu_plugin_sys = { version = "0.11.0", path = "./crates/nu_plugin_sys", optional=true }
-nu_plugin_textview = { version = "0.11.0", path = "./crates/nu_plugin_textview", optional=true }
-nu_plugin_tree = { version = "0.11.0", path = "./crates/nu_plugin_tree", optional=true }
-nu-macros = { version = "0.11.0", path = "./crates/nu-macros" }
+nu-cli = {version = "0.20.0", path = "./crates/nu-cli"}
+nu-data = {version = "0.20.0", path = "./crates/nu-data"}
+nu-errors = {version = "0.20.0", path = "./crates/nu-errors"}
+nu-parser = {version = "0.20.0", path = "./crates/nu-parser"}
+nu-plugin = {version = "0.20.0", path = "./crates/nu-plugin"}
+nu-protocol = {version = "0.20.0", path = "./crates/nu-protocol"}
+nu-source = {version = "0.20.0", path = "./crates/nu-source"}
+nu-value-ext = {version = "0.20.0", path = "./crates/nu-value-ext"}
 
-crossterm = { version = "0.16.0", optional = true }
-onig_sys = { version = "=69.1.0", optional = true }
-semver = { version = "0.9.0", optional = true }
-syntect = { version = "3.2.0", optional = true }
-url = { version = "2.1.1", optional = true }
+nu_plugin_chart = {version = "0.20.0", path = "./crates/nu_plugin_chart", optional = true}
+nu_plugin_binaryview = {version = "0.20.0", path = "./crates/nu_plugin_binaryview", optional = true}
+nu_plugin_fetch = {version = "0.20.0", path = "./crates/nu_plugin_fetch", optional = true}
+nu_plugin_from_bson = {version = "0.20.0", path = "./crates/nu_plugin_from_bson", optional = true}
+nu_plugin_from_sqlite = {version = "0.20.0", path = "./crates/nu_plugin_from_sqlite", optional = true}
+nu_plugin_inc = {version = "0.20.0", path = "./crates/nu_plugin_inc", optional = true}
+nu_plugin_match = {version = "0.20.0", path = "./crates/nu_plugin_match", optional = true}
+nu_plugin_post = {version = "0.20.0", path = "./crates/nu_plugin_post", optional = true}
+nu_plugin_ps = {version = "0.20.0", path = "./crates/nu_plugin_ps", optional = true}
+nu_plugin_s3 = {version = "0.20.0", path = "./crates/nu_plugin_s3", optional = true}
+nu_plugin_start = {version = "0.20.0", path = "./crates/nu_plugin_start", optional = true}
+nu_plugin_sys = {version = "0.20.0", path = "./crates/nu_plugin_sys", optional = true}
+nu_plugin_textview = {version = "0.20.0", path = "./crates/nu_plugin_textview", optional = true}
+nu_plugin_to_bson = {version = "0.20.0", path = "./crates/nu_plugin_to_bson", optional = true}
+nu_plugin_to_sqlite = {version = "0.20.0", path = "./crates/nu_plugin_to_sqlite", optional = true}
+nu_plugin_tree = {version = "0.20.0", path = "./crates/nu_plugin_tree", optional = true}
 
-clap = "2.33.0"
-ctrlc = "3.1.4"
-dunce = "1.0.0"
-futures = { version = "0.3", features = ["compat", "io-compat"] }
-log = "0.4.8"
+# Required to bootstrap the main binary
+clap = "2.33.3"
+ctrlc = "3.1.6"
+futures = {version = "0.3.5", features = ["compat", "io-compat"]}
+log = "0.4.11"
 pretty_env_logger = "0.4.0"
 
 [dev-dependencies]
-pretty_assertions = "0.6.1"
-nu-test-support = { version = "0.11.0", path = "./crates/nu-test-support" }
+nu-test-support = {version = "0.20.0", path = "./crates/nu-test-support"}
+dunce = "1.0.1"
 
 [build-dependencies]
+serde = {version = "1.0.115", features = ["derive"]}
 toml = "0.5.6"
-serde = { version = "1.0.104", features = ["derive"] }
-nu-build = { version = "0.11.0", path = "./crates/nu-build" }
 
 [features]
-# Test executables
-test-bins = []
+ctrlc-support = ["nu-cli/ctrlc"]
+directories-support = ["nu-cli/directories", "nu-cli/dirs", "nu-data/directories", "nu-data/dirs"]
+git-support = ["nu-cli/git2"]
+ptree-support = ["nu-cli/ptree"]
+rich-benchmark = ["nu-cli/rich-benchmark"]
+rustyline-support = ["nu-cli/rustyline-support"]
+term-support = ["nu-cli/term"]
+uuid-support = ["nu-cli/uuid_crate"]
+which-support = ["nu-cli/ichwh", "nu-cli/which"]
 
-default = ["sys", "ps", "textview", "inc", "str"]
-stable = ["default", "starship-prompt", "binaryview", "match", "tree", "average", "sum", "post", "fetch", "clipboard-cli"]
+default = [
+  "sys",
+  "ps",
+  "textview",
+  "inc",
+  "git-support",
+  "directories-support",
+  "ctrlc-support",
+  "which-support",
+  "ptree-support",
+  "term-support",
+  "uuid-support",
+  "rustyline-support",
+  "match",
+  "post",
+  "fetch",
+  "rich-benchmark",
+]
+extra = ["default", "binaryview", "tree", "clipboard-cli", "trash-support", "start", "bson", "sqlite", "s3", "chart"]
+stable = ["default"]
 
-# Default
-textview = ["crossterm", "syntect", "onig_sys", "url", "nu_plugin_textview"]
-sys = ["nu_plugin_sys"]
+trace = ["nu-parser/trace"]
+
+# Stable (Default)
+inc = ["nu_plugin_inc"]
 ps = ["nu_plugin_ps"]
-inc = ["semver", "nu_plugin_inc"]
-str = ["nu_plugin_str"]
-
-# Stable
-average = ["nu_plugin_average"]
-binaryview = ["nu_plugin_binaryview"]
+sys = ["nu_plugin_sys"]
+textview = ["nu_plugin_textview"]
 fetch = ["nu_plugin_fetch"]
 match = ["nu_plugin_match"]
 post = ["nu_plugin_post"]
-sum = ["nu_plugin_sum"]
-trace = ["nu-parser/trace"]
-tree = ["nu_plugin_tree"]
 
+# Extra
+bson = ["nu_plugin_from_bson", "nu_plugin_to_bson"]
+chart = ["nu_plugin_chart"]
+binaryview = ["nu_plugin_binaryview"]
 clipboard-cli = ["nu-cli/clipboard-cli"]
-starship-prompt = ["nu-cli/starship-prompt"]
-
-[[bin]]
-name = "fail"
-path = "crates/nu-test-support/src/bins/fail.rs"
-required-features = ["test-bins"]
-
-[[bin]]
-name = "chop"
-path = "crates/nu-test-support/src/bins/chop.rs"
-required-features = ["test-bins"]
-
-[[bin]]
-name = "cococo"
-path = "crates/nu-test-support/src/bins/cococo.rs"
-required-features = ["test-bins"]
-
-[[bin]]
-name = "nonu"
-path = "crates/nu-test-support/src/bins/nonu.rs"
-required-features = ["test-bins"]
-
-[[bin]]
-name = "iecho"
-path = "crates/nu-test-support/src/bins/iecho.rs"
-required-features = ["test-bins"]
+trash-support = ["nu-cli/trash-support"]
+start = ["nu_plugin_start"]
+tree = ["nu_plugin_tree"]
+s3 = ["nu_plugin_s3"]
+sqlite = ["nu_plugin_from_sqlite", "nu_plugin_to_sqlite"]
 
 # Core plugins that ship with `cargo install nu` by default
 # Currently, Cargo limits us to installing only one binary
@@ -132,50 +132,56 @@ path = "src/plugins/nu_plugin_core_ps.rs"
 required-features = ["ps"]
 
 [[bin]]
-name = "nu_plugin_core_str"
-path = "src/plugins/nu_plugin_core_str.rs"
-required-features = ["str"]
-
-[[bin]]
 name = "nu_plugin_core_sys"
 path = "src/plugins/nu_plugin_core_sys.rs"
 required-features = ["sys"]
 
-# Stable plugins
 [[bin]]
-name = "nu_plugin_stable_average"
-path = "src/plugins/nu_plugin_stable_average.rs"
-required-features = ["average"]
-
-[[bin]]
-name = "nu_plugin_stable_fetch"
-path = "src/plugins/nu_plugin_stable_fetch.rs"
+name = "nu_plugin_core_fetch"
+path = "src/plugins/nu_plugin_core_fetch.rs"
 required-features = ["fetch"]
 
 [[bin]]
-name = "nu_plugin_stable_binaryview"
-path = "src/plugins/nu_plugin_stable_binaryview.rs"
-required-features = ["binaryview"]
-
-[[bin]]
-name = "nu_plugin_stable_match"
-path = "src/plugins/nu_plugin_stable_match.rs"
+name = "nu_plugin_core_match"
+path = "src/plugins/nu_plugin_core_match.rs"
 required-features = ["match"]
 
 [[bin]]
-name = "nu_plugin_stable_post"
-path = "src/plugins/nu_plugin_stable_post.rs"
+name = "nu_plugin_core_post"
+path = "src/plugins/nu_plugin_core_post.rs"
 required-features = ["post"]
 
-[[bin]]
-name = "nu_plugin_stable_sum"
-path = "src/plugins/nu_plugin_stable_sum.rs"
-required-features = ["sum"]
+# Extra plugins
 
 [[bin]]
-name = "nu_plugin_stable_tree"
-path = "src/plugins/nu_plugin_stable_tree.rs"
+name = "nu_plugin_extra_binaryview"
+path = "src/plugins/nu_plugin_extra_binaryview.rs"
+required-features = ["binaryview"]
+
+[[bin]]
+name = "nu_plugin_extra_tree"
+path = "src/plugins/nu_plugin_extra_tree.rs"
 required-features = ["tree"]
+
+[[bin]]
+name = "nu_plugin_extra_start"
+path = "src/plugins/nu_plugin_extra_start.rs"
+required-features = ["start"]
+
+[[bin]]
+name = "nu_plugin_extra_s3"
+path = "src/plugins/nu_plugin_extra_s3.rs"
+required-features = ["s3"]
+
+[[bin]]
+name = "nu_plugin_extra_chart_bar"
+path = "src/plugins/nu_plugin_extra_chart_bar.rs"
+required-features = ["chart"]
+
+[[bin]]
+name = "nu_plugin_extra_chart_line"
+path = "src/plugins/nu_plugin_extra_chart_line.rs"
+required-features = ["chart"]
 
 # Main nu binary
 [[bin]]

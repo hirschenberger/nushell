@@ -1,69 +1,54 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{ReturnSuccess, ReturnValue, Signature, SyntaxShape, Value};
-use nu_source::Tagged;
+use nu_protocol::{ReturnSuccess, Value};
 
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 
 pub struct Shuffle;
 
-#[derive(Deserialize)]
-pub struct Arguments {
-    #[serde(rename = "num")]
-    limit: Option<Tagged<u64>>,
-}
-
+#[async_trait]
 impl WholeStreamCommand for Shuffle {
     fn name(&self) -> &str {
         "shuffle"
-    }
-
-    fn signature(&self) -> Signature {
-        Signature::build("shuffle").named(
-            "num",
-            SyntaxShape::Int,
-            "Limit `num` number of rows",
-            Some('n'),
-        )
     }
 
     fn usage(&self) -> &str {
         "Shuffle rows randomly."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, shuffle)?.run()
+        shuffle(args, registry).await
     }
 }
 
-fn shuffle(
-    Arguments { limit }: Arguments,
-    RunnableContext { input, .. }: RunnableContext,
+async fn shuffle(
+    args: CommandArgs,
+    _registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let stream = async_stream! {
-        let mut values: Vec<Value> = input.values.collect().await;
+    let input = args.input;
+    let mut values: Vec<Value> = input.collect().await;
 
-        let out = if let Some(n) = limit {
-            let (shuffled, _) = values.partial_shuffle(&mut thread_rng(), *n as usize);
-            shuffled.to_vec()
-        } else {
-            values.shuffle(&mut thread_rng());
-            values.clone()
-        };
+    values.shuffle(&mut thread_rng());
 
-        for val in out.into_iter() {
-            yield ReturnSuccess::value(val);
-        }
-    };
+    Ok(futures::stream::iter(values.into_iter().map(ReturnSuccess::value)).to_output_stream())
+}
 
-    let stream: BoxStream<'static, ReturnValue> = stream.boxed();
+#[cfg(test)]
+mod tests {
+    use super::ShellError;
+    use super::Shuffle;
 
-    Ok(stream.to_output_stream())
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Shuffle {})?)
+    }
 }

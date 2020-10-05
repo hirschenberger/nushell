@@ -7,15 +7,30 @@ fn lines() {
         r#"
             open cargo_sample.toml -r
             | lines
-            | skip-while $it != "[dependencies]"
+            | skip while $it != "[dependencies]"
             | skip 1
             | first 1
-            | split-column "="
+            | split column "="
             | get Column1
-            | trim
+            | str trim
             | echo $it
         "#
     ));
 
-    assert_eq!(actual, "rustyline");
+    assert_eq!(actual.out, "rustyline");
+}
+
+#[test]
+fn lines_proper_buffering() {
+    let actual = nu!(
+        cwd: "tests/fixtures/formats", pipeline(
+        r#"
+            open lines_test.txt -r
+            | lines
+            | str length
+            | to json
+        "#
+    ));
+
+    assert_eq!(actual.out, "[8194,4]");
 }

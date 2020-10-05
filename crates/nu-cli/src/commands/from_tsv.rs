@@ -11,13 +11,14 @@ pub struct FromTSVArgs {
     headerless: bool,
 }
 
+#[async_trait]
 impl WholeStreamCommand for FromTSV {
     fn name(&self) -> &str {
-        "from-tsv"
+        "from tsv"
     }
 
     fn signature(&self) -> Signature {
-        Signature::build("from-tsv").switch(
+        Signature::build("from tsv").switch(
             "headerless",
             "don't treat the first row as column names",
             None,
@@ -28,18 +29,35 @@ impl WholeStreamCommand for FromTSV {
         "Parse text as .tsv and create table."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, from_tsv)?.run()
+        from_tsv(args, registry).await
     }
 }
 
-fn from_tsv(
-    FromTSVArgs { headerless }: FromTSVArgs,
-    runnable_context: RunnableContext,
+async fn from_tsv(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    from_delimited_data(headerless, '\t', "TSV", runnable_context)
+    let registry = registry.clone();
+    let name = args.call_info.name_tag.clone();
+    let (FromTSVArgs { headerless }, input) = args.process(&registry).await?;
+
+    from_delimited_data(headerless, '\t', "TSV", input, name).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FromTSV;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(FromTSV {})?)
+    }
 }

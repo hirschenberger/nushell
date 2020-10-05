@@ -1,5 +1,5 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
 use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, UntaggedValue, Value};
@@ -14,6 +14,7 @@ struct DefaultArgs {
 
 pub struct Default;
 
+#[async_trait]
 impl WholeStreamCommand for Default {
     fn name(&self) -> &str {
         "default"
@@ -33,44 +34,61 @@ impl WholeStreamCommand for Default {
         "Sets a default row's column if missing."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, default)?.run()
+        default(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![Example {
+            description: "Give a default 'target' to all file entries",
+            example: "ls -la | default target 'nothing'",
+            result: None,
+        }]
     }
 }
 
-fn default(
-    DefaultArgs { column, value }: DefaultArgs,
-    RunnableContext { input, .. }: RunnableContext,
+async fn default(
+    args: CommandArgs,
+    registry: &CommandRegistry,
 ) -> Result<OutputStream, ShellError> {
-    let stream = input
-        .values
-        .map(move |item| {
-            let mut result = VecDeque::new();
+    let registry = registry.clone();
+    let (DefaultArgs { column, value }, input) = args.process(&registry).await?;
 
-            let should_add = match item {
+    Ok(input
+        .map(move |item| {
+            let should_add = matches!(
+                item,
                 Value {
                     value: UntaggedValue::Row(ref r),
                     ..
-                } => r.get_data(&column.item).borrow().is_none(),
-                _ => false,
-            };
+                } if r.get_data(&column.item).borrow().is_none()
+            );
 
             if should_add {
                 match item.insert_data_at_path(&column.item, value.clone()) {
-                    Some(new_value) => result.push_back(ReturnSuccess::value(new_value)),
-                    None => result.push_back(ReturnSuccess::value(item)),
+                    Some(new_value) => ReturnSuccess::value(new_value),
+                    None => ReturnSuccess::value(item),
                 }
             } else {
-                result.push_back(ReturnSuccess::value(item));
+                ReturnSuccess::value(item)
             }
-
-            futures::stream::iter(result)
         })
-        .flatten();
+        .to_output_stream())
+}
 
-    Ok(stream.to_output_stream())
+#[cfg(test)]
+mod tests {
+    use super::Default;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Default {})?)
+    }
 }

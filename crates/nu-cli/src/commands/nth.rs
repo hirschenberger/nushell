@@ -1,8 +1,8 @@
+use crate::command_registry::CommandRegistry;
 use crate::commands::WholeStreamCommand;
-use crate::context::CommandRegistry;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{ReturnSuccess, Signature, SyntaxShape};
+use nu_protocol::{ReturnSuccess, Signature, SyntaxShape, Value};
 use nu_source::Tagged;
 
 #[derive(Deserialize)]
@@ -13,6 +13,7 @@ struct NthArgs {
 
 pub struct Nth;
 
+#[async_trait]
 impl WholeStreamCommand for Nth {
     fn name(&self) -> &str {
         "nth"
@@ -22,7 +23,7 @@ impl WholeStreamCommand for Nth {
         Signature::build("nth")
             .required(
                 "row number",
-                SyntaxShape::Any,
+                SyntaxShape::Int,
                 "the number of the row to return",
             )
             .rest(SyntaxShape::Any, "Optionally return more rows")
@@ -32,45 +33,75 @@ impl WholeStreamCommand for Nth {
         "Return only the selected rows"
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        args.process(registry, nth)?.run()
+        nth(args, registry).await
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Get the second row",
+                example: "echo [first second third] | nth 1",
+                result: Some(vec![Value::from("second")]),
+            },
+            Example {
+                description: "Get the first and third rows",
+                example: "echo [first second third] | nth 0 2",
+                result: Some(vec![Value::from("first"), Value::from("third")]),
+            },
+        ]
     }
 }
 
-fn nth(
-    NthArgs {
-        row_number,
-        rest: and_rows,
-    }: NthArgs,
-    RunnableContext { input, .. }: RunnableContext,
-) -> Result<OutputStream, ShellError> {
-    let stream = input
-        .values
+async fn nth(args: CommandArgs, registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
+    let registry = registry.clone();
+    let (
+        NthArgs {
+            row_number,
+            rest: and_rows,
+        },
+        input,
+    ) = args.process(&registry).await?;
+
+    let row_numbers = vec![vec![row_number], and_rows]
+        .into_iter()
+        .flatten()
+        .map(|x| x.item)
+        .collect::<Vec<u64>>();
+
+    let max_row_number = row_numbers
+        .iter()
+        .max()
+        .expect("Internal error: should be > 0 row numbers");
+
+    Ok(input
+        .take(*max_row_number as usize + 1)
         .enumerate()
-        .map(move |(idx, item)| {
-            let row_number = vec![row_number.clone()];
-
-            let row_numbers = vec![&row_number, &and_rows]
-                .into_iter()
-                .flatten()
-                .collect::<Vec<&Tagged<u64>>>();
-
-            let mut result = VecDeque::new();
-
-            if row_numbers
-                .iter()
-                .any(|requested| requested.item == idx as u64)
-            {
-                result.push_back(ReturnSuccess::value(item));
-            }
-
-            futures::stream::iter(result)
+        .filter_map(move |(idx, item)| {
+            futures::future::ready(
+                if row_numbers.iter().any(|requested| *requested == idx as u64) {
+                    Some(ReturnSuccess::value(item))
+                } else {
+                    None
+                },
+            )
         })
-        .flatten();
+        .to_output_stream())
+}
 
-    Ok(stream.to_output_stream())
+#[cfg(test)]
+mod tests {
+    use super::Nth;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Nth {})?)
+    }
 }

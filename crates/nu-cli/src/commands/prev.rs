@@ -6,6 +6,7 @@ use crate::commands::WholeStreamCommand;
 
 pub struct Previous;
 
+#[async_trait]
 impl WholeStreamCommand for Previous {
     fn name(&self) -> &str {
         "p"
@@ -19,7 +20,7 @@ impl WholeStreamCommand for Previous {
         "Go to previous shell."
     }
 
-    fn run(
+    async fn run(
         &self,
         args: CommandArgs,
         registry: &CommandRegistry,
@@ -30,4 +31,17 @@ impl WholeStreamCommand for Previous {
 
 fn previous(_args: CommandArgs, _registry: &CommandRegistry) -> Result<OutputStream, ShellError> {
     Ok(vec![Ok(ReturnSuccess::Action(CommandAction::PreviousShell))].into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Previous;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Previous {})?)
+    }
 }

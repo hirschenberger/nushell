@@ -1,6 +1,5 @@
 use crate::pretty::{b, DebugDocBuilder, PrettyDebugWithSource};
 use crate::text::Text;
-use crate::tracable::TracableContext;
 
 use derive_new::new;
 use getset::Getters;
@@ -227,28 +226,6 @@ impl From<&Tag> for Tag {
     }
 }
 
-impl<T> From<nom_locate::LocatedSpanEx<&str, T>> for Span {
-    fn from(input: nom_locate::LocatedSpanEx<&str, T>) -> Span {
-        Span::new(input.offset, input.offset + input.fragment.len())
-    }
-}
-
-impl<T>
-    From<(
-        nom_locate::LocatedSpanEx<T, u64>,
-        nom_locate::LocatedSpanEx<T, u64>,
-    )> for Span
-{
-    fn from(
-        input: (
-            nom_locate::LocatedSpanEx<T, u64>,
-            nom_locate::LocatedSpanEx<T, u64>,
-        ),
-    ) -> Span {
-        Span::new(input.0.offset, input.1.offset)
-    }
-}
-
 impl From<(usize, usize)> for Span {
     fn from(input: (usize, usize)) -> Span {
         Span::new(input.0, input.1)
@@ -298,15 +275,6 @@ impl From<&Span> for Tag {
     }
 }
 
-impl From<(usize, usize, TracableContext)> for Tag {
-    fn from((start, end, _context): (usize, usize, TracableContext)) -> Self {
-        Tag {
-            anchor: None,
-            span: Span::new(start, end),
-        }
-    }
-}
-
 impl From<(usize, usize, AnchorLocation)> for Tag {
     fn from((start, end, anchor): (usize, usize, AnchorLocation)) -> Self {
         Tag {
@@ -321,15 +289,6 @@ impl From<(usize, usize, Option<AnchorLocation>)> for Tag {
         Tag {
             anchor,
             span: Span::new(start, end),
-        }
-    }
-}
-
-impl From<nom_locate::LocatedSpanEx<&str, TracableContext>> for Tag {
-    fn from(input: nom_locate::LocatedSpanEx<&str, TracableContext>) -> Tag {
-        Tag {
-            anchor: None,
-            span: Span::new(input.offset, input.offset + input.fragment.len()),
         }
     }
 }
@@ -352,6 +311,13 @@ impl Tag {
         Tag {
             anchor: None,
             span: Span::unknown(),
+        }
+    }
+
+    pub fn anchored(self, anchor: Option<AnchorLocation>) -> Tag {
+        Tag {
+            anchor,
+            span: self.span,
         }
     }
 
@@ -506,9 +472,15 @@ impl From<&Span> for Span {
 
 impl From<Option<Span>> for Span {
     fn from(input: Option<Span>) -> Span {
-        match input {
-            None => Span::new(0, 0),
-            Some(span) => span,
+        input.unwrap_or_else(|| Span::new(0, 0))
+    }
+}
+
+impl From<Span> for std::ops::Range<usize> {
+    fn from(input: Span) -> std::ops::Range<usize> {
+        std::ops::Range {
+            start: input.start,
+            end: input.end,
         }
     }
 }
@@ -561,10 +533,11 @@ impl Span {
     /// let span = Span::new(2, 8);
     ///
     /// assert_eq!(span.contains(5), true);
+    /// assert_eq!(span.contains(8), false);
     /// assert_eq!(span.contains(100), false);
     /// ```
     pub fn contains(&self, pos: usize) -> bool {
-        self.start <= pos && self.end >= pos
+        self.start <= pos && pos < self.end
     }
 
     /// Returns a new Span by merging an earlier Span with the current Span.
@@ -659,6 +632,27 @@ impl Span {
         self.start == 0 && self.end == 0
     }
 
+    /// Returns a bool if the current Span does not cover.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// //  make clean
+    /// //  ----
+    /// //  (0,4)
+    /// //
+    /// //       ^(5,5)
+    ///
+    /// let make_span = Span::new(0,4);
+    /// let clean_span = Span::new(5,5);
+    ///
+    /// assert_eq!(make_span.is_closed(), false);
+    /// assert_eq!(clean_span.is_closed(), true);
+    /// ```
+    pub fn is_closed(&self) -> bool {
+        self.start == self.end
+    }
+
     /// Returns a slice of the input that covers the start and end of the current Span.
     pub fn slice<'a>(&self, source: &'a str) -> &'a str {
         &source[self.start..self.end]
@@ -674,32 +668,6 @@ impl PartialOrd<usize> for Span {
 impl PartialEq<usize> for Span {
     fn eq(&self, other: &usize) -> bool {
         (self.end - self.start) == *other
-    }
-}
-
-impl language_reporting::ReportingSpan for Span {
-    fn with_start(&self, start: usize) -> Self {
-        if self.end < start {
-            Span::new(start, start)
-        } else {
-            Span::new(start, self.end)
-        }
-    }
-
-    fn with_end(&self, end: usize) -> Self {
-        if end < self.start {
-            Span::new(end, end)
-        } else {
-            Span::new(self.start, end)
-        }
-    }
-
-    fn start(&self) -> usize {
-        self.start
-    }
-
-    fn end(&self) -> usize {
-        self.end
     }
 }
 

@@ -1,4 +1,6 @@
+use crate::hir::Block;
 use crate::value::Value;
+use crate::SyntaxShape;
 use nu_errors::ShellError;
 use nu_source::{b, DebugDocBuilder, PrettyDebug};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,10 @@ pub enum CommandAction {
     EnterValueShell(Value),
     /// Enter the help shell, which allows exploring the help system
     EnterHelpShell(Value),
+    /// Add an alias command
+    AddAlias(String, Vec<(String, SyntaxShape)>, Block),
+    /// Add plugins from path given
+    AddPlugins(String),
     /// Go to the previous shell in the shell ring buffer
     PreviousShell,
     /// Go to the next shell in the shell ring buffer
@@ -41,6 +47,8 @@ impl PrettyDebug for CommandAction {
             CommandAction::EnterShell(s) => b::typed("enter shell", b::description(s)),
             CommandAction::EnterValueShell(v) => b::typed("enter value shell", v.pretty()),
             CommandAction::EnterHelpShell(v) => b::typed("enter help shell", v.pretty()),
+            CommandAction::AddAlias(..) => b::description("add alias"),
+            CommandAction::AddPlugins(..) => b::description("add plugins"),
             CommandAction::PreviousShell => b::description("previous shell"),
             CommandAction::NextShell => b::description("next shell"),
             CommandAction::LeaveShell => b::description("leave shell"),

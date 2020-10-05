@@ -13,7 +13,7 @@ jobs:
         - x86_64-unknown-linux-musl
         - x86_64-unknown-linux-gnu
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v2
     - name: Install rust-embedded/cross
       env: { VERSION: v0.1.16 }
       run: >-
@@ -24,7 +24,7 @@ jobs:
       run: |
         cross build --target ${{ matrix.arch }} --release
         # leave only the executable file
-        rm -rd target/${{ matrix.arch }}/release/{*/*,*.d,*.rlib,.fingerprint}
+        rm -frd target/${{ matrix.arch }}/release/{*/*,*.d,*.rlib,.fingerprint}
         find . -empty -delete
     - uses: actions/upload-artifact@master
       with:
@@ -52,17 +52,17 @@ jobs:
         - glibc
         - musl
         include:
-        - { tag: alpine,           base-image: alpine,                     arch: x86_64-unknown-linux-musl, plugin: true    }
-        - { tag: slim,             base-image: 'debian:stable-slim',       arch: x86_64-unknown-linux-gnu,  plugin: true    }
-        - { tag: debian,           base-image: debian,                     arch: x86_64-unknown-linux-gnu,  plugin: true    }
-        - { tag: glibc-busybox,    base-image: 'busybox:glibc',            arch: x86_64-unknown-linux-gnu,  use-patch: true }
-        - { tag: musl-busybox,     base-image: 'busybox:musl',             arch: x86_64-unknown-linux-musl,                 }
-        - { tag: musl-distroless,  base-image: 'gcr.io/distroless/static', arch: x86_64-unknown-linux-musl,                 }
-        - { tag: glibc-distroless, base-image: 'gcr.io/distroless/cc',     arch: x86_64-unknown-linux-gnu,  use-patch: true }
-        - { tag: glibc,            base-image: scratch,                    arch: x86_64-unknown-linux-gnu,                  }
-        - { tag: musl,             base-image: scratch,                    arch: x86_64-unknown-linux-musl,                 }
+        - { tag: alpine,           base-image: alpine,                     arch: x86_64-unknown-linux-musl, plugin: true,  use-patch: false}
+        - { tag: slim,             base-image: 'debian:stable-slim',       arch: x86_64-unknown-linux-gnu,  plugin: true,  use-patch: false}
+        - { tag: debian,           base-image: debian,                     arch: x86_64-unknown-linux-gnu,  plugin: true,  use-patch: false}
+        - { tag: glibc-busybox,    base-image: 'busybox:glibc',            arch: x86_64-unknown-linux-gnu,  plugin: false, use-patch: true }
+        - { tag: musl-busybox,     base-image: 'busybox:musl',             arch: x86_64-unknown-linux-musl, plugin: false, use-patch: false}
+        - { tag: musl-distroless,  base-image: 'gcr.io/distroless/static', arch: x86_64-unknown-linux-musl, plugin: false, use-patch: false}
+        - { tag: glibc-distroless, base-image: 'gcr.io/distroless/cc',     arch: x86_64-unknown-linux-gnu,  plugin: false, use-patch: true }
+        - { tag: glibc,            base-image: scratch,                    arch: x86_64-unknown-linux-gnu,  plugin: false, use-patch: false}
+        - { tag: musl,             base-image: scratch,                    arch: x86_64-unknown-linux-musl, plugin: false, use-patch: false}
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v2
     - uses: actions/download-artifact@master
       with: { name: '${{ matrix.arch }}', path: target/release }
     - name: Build and publish exact version

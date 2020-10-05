@@ -1,8 +1,8 @@
-use crate::commands::command::RunnablePerItemContext;
-use crate::context::CommandRegistry;
+use crate::command_registry::CommandRegistry;
+use crate::commands::WholeStreamCommand;
 use crate::prelude::*;
 use nu_errors::ShellError;
-use nu_protocol::{CallInfo, Signature, SyntaxShape, Value};
+use nu_protocol::{Signature, SyntaxShape};
 use nu_source::Tagged;
 use std::path::PathBuf;
 
@@ -15,7 +15,8 @@ pub struct CopyArgs {
     pub recursive: Tagged<bool>,
 }
 
-impl PerItemCommand for Cpy {
+#[async_trait]
+impl WholeStreamCommand for Cpy {
     fn name(&self) -> &str {
         "cp"
     }
@@ -35,20 +36,42 @@ impl PerItemCommand for Cpy {
         "Copy files."
     }
 
-    fn run(
+    async fn run(
         &self,
-        call_info: &CallInfo,
-        _registry: &CommandRegistry,
-        raw_args: &RawCommandArgs,
-        _input: Value,
+        args: CommandArgs,
+        registry: &CommandRegistry,
     ) -> Result<OutputStream, ShellError> {
-        call_info
-            .process(&raw_args.shell_manager, raw_args.ctrl_c.clone(), cp)?
-            .run()
+        let shell_manager = args.shell_manager.clone();
+        let name = args.call_info.name_tag.clone();
+        let (args, _) = args.process(&registry).await?;
+        shell_manager.cp(args, name)
+    }
+
+    fn examples(&self) -> Vec<Example> {
+        vec![
+            Example {
+                description: "Copy myfile to dir_b",
+                example: "cp myfile dir_b",
+                result: None,
+            },
+            Example {
+                description: "Recursively copy dir_a to dir_b",
+                example: "cp -r dir_a dir_b",
+                result: None,
+            },
+        ]
     }
 }
 
-fn cp(args: CopyArgs, context: &RunnablePerItemContext) -> Result<OutputStream, ShellError> {
-    let shell_manager = context.shell_manager.clone();
-    shell_manager.cp(args, context)
+#[cfg(test)]
+mod tests {
+    use super::Cpy;
+    use super::ShellError;
+
+    #[test]
+    fn examples_work_as_expected() -> Result<(), ShellError> {
+        use crate::examples::test as test_examples;
+
+        Ok(test_examples(Cpy {})?)
+    }
 }
